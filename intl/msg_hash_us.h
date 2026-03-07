@@ -232,6 +232,14 @@ MSG_HASH(
    "Quit RetroArch application. Configuration save on exit is enabled."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Quit RetroArch application. Configuration save on exit is disabled."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Quit RetroArch. Killing the program in any hard way (SIGKILL, etc.) will terminate RetroArch without saving the configuration in any case. On Unix-likes, SIGINT/SIGTERM allows a clean deinitialization which includes configuration save if enabled."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Sync Now"
    )
@@ -254,14 +262,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Resolve all conflicts by downloading server files, replacing local copies."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Quit RetroArch application. Configuration save on exit is disabled."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Quit RetroArch. Killing the program in any hard way (SIGKILL, etc.) will terminate RetroArch without saving the configuration in any case. On Unix-likes, SIGINT/SIGTERM allows a clean deinitialization which includes configuration save if enabled."
    )
 
 /* Main Menu > Load Core */
@@ -3277,8 +3277,36 @@ MSG_HASH(
    "Adjust the sensitivity of the Accelerometer."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Sensor Orientation"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Rotate accelerometer and gyroscope axes to match device orientation."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Auto"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_0,
+   "0°"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_90,
+   "90°"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_180,
+   "180°"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_270,
+   "270°"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Adjust the sensitivity of the Gyroscope."
+   "Adjust the sensitivity of the Gyroscope."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3420,6 +3448,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "Change haptic feedback and vibration settings."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Motion/Light Sensors"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "Change accelerometer, gyroscope and illuminance settings."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -4970,8 +5006,16 @@ MSG_HASH(
    "Use Built-In Media Player"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "Show Media Player supported files in File Browser."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "Use Built-In Image Viewer"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "Show Image Viewer supported files in File Browser."
    )
 
 /* Settings > Frame Throttle */
@@ -6545,11 +6589,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Show 'Restart'"
+   "Show 'Reset'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Show the restart content option."
+   "Show the reset content option."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
@@ -6557,7 +6601,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Show the 'Close Content' option."
+   "Show the close content option."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -9090,11 +9134,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "Restart"
+   "Reset"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Restart the content from the beginning. RetroPad Start triggers hard reset."
+   "Trigger soft reset. RetroPad Start triggers hard reset."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,

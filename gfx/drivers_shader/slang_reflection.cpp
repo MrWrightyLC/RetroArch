@@ -64,7 +64,10 @@ static const char *semantic_uniform_names[] = {
    "SubpixelLayout",
    "ExpandGamut",
    "InverseTonemap",
-   "HDR10"
+   "HDR10",
+   "Gyroscope",
+   "Accelerometer",
+   "AccelerometerRest"
 };
 
 static slang_texture_semantic slang_name_to_texture_semantic(
@@ -299,6 +302,13 @@ static bool validate_type_for_semantic(const spirv_cross::SPIRType &type, slang_
       case SLANG_SEMANTIC_CORE_ASPECT_ROT:
          return type.basetype == spirv_cross::SPIRType::Float
             &&  type.vecsize  == 1
+            &&  type.columns  == 1;
+         /* vec3 - sensor uniforms */
+      case SLANG_SEMANTIC_GYROSCOPE:
+      case SLANG_SEMANTIC_ACCELEROMETER:
+      case SLANG_SEMANTIC_ACCELEROMETER_REST:
+         return type.basetype == spirv_cross::SPIRType::Float
+            &&  type.vecsize  == 3
             &&  type.columns  == 1;
          /* float */
       case SLANG_SEMANTIC_FLOAT_PARAMETER:
@@ -727,7 +737,6 @@ bool slang_reflect(
       }
    }
 
-   RARCH_LOG("[Slang]\n");
    RARCH_LOG("[Slang]   Uniforms (Vertex: %s, Fragment: %s):\n",
          reflection->ubo_stage_mask & SLANG_STAGE_VERTEX_MASK ? "yes": "no",
          reflection->ubo_stage_mask & SLANG_STAGE_FRAGMENT_MASK ? "yes": "no");
@@ -776,13 +785,7 @@ bool slang_reflect(
       }
    }
 
-   {
-      char buf[64];
-      size_t _len = strlcpy(buf, "[Slang]\n", sizeof(buf));
-      _len       += strlcpy(buf + _len, FILE_PATH_LOG_INFO, sizeof(buf) - _len);
-      strlcpy(buf + _len, "\n[Slang]   Parameters:\n", sizeof(buf) - _len);
-      RARCH_LOG(buf);
-   }
+   RARCH_LOG("[Slang]   Parameters:\n");
 
    for (i = 0; i < reflection->semantic_float_parameters.size(); i++)
    {

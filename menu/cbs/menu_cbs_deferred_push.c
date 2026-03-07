@@ -226,6 +226,7 @@ GENERIC_DEFERRED_PUSH(deferred_push_input_settings_list,            DISPLAYLIST_
 GENERIC_DEFERRED_PUSH(deferred_push_input_menu_settings_list,            DISPLAYLIST_INPUT_MENU_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_input_turbo_fire_settings_list,      DISPLAYLIST_INPUT_TURBO_FIRE_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_input_haptic_feedback_settings_list, DISPLAYLIST_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST)
+GENERIC_DEFERRED_PUSH(deferred_push_input_sensor_settings_list,         DISPLAYLIST_INPUT_SENSOR_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_ai_service_settings_list,            DISPLAYLIST_AI_SERVICE_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_accessibility_settings_list,         DISPLAYLIST_ACCESSIBILITY_SETTINGS_LIST)
 GENERIC_DEFERRED_PUSH(deferred_push_latency_settings_list,          DISPLAYLIST_LATENCY_SETTINGS_LIST)
@@ -315,8 +316,7 @@ static int general_push(menu_displaylist_info_t *info,
    settings_t                  *settings      = config_get_ptr();
    menu_handle_t                  *menu       = menu_state_get_ptr()->driver_data;
 #if defined(HAVE_FFMPEG) || defined(HAVE_MPV) || defined (HAVE_AUDIOMIXER)
-   bool
-      multimedia_builtin_mediaplayer_enable   = settings->bools.multimedia_builtin_mediaplayer_enable;
+   bool multimedia_builtin_mediaplayer_enable = settings->bools.multimedia_builtin_mediaplayer_enable;
 #endif
 #ifdef HAVE_IMAGEVIEWER
    bool multimedia_builtin_imageviewer_enable = settings->bools.multimedia_builtin_imageviewer_enable;
@@ -657,6 +657,7 @@ static int menu_cbs_init_bind_deferred_push_compare_label(
       {MENU_ENUM_LABEL_DEFERRED_INPUT_MENU_SETTINGS_LIST, deferred_push_input_menu_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_INPUT_TURBO_FIRE_SETTINGS_LIST, deferred_push_input_turbo_fire_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_INPUT_HAPTIC_FEEDBACK_SETTINGS_LIST, deferred_push_input_haptic_feedback_settings_list},
+      {MENU_ENUM_LABEL_DEFERRED_INPUT_SENSOR_SETTINGS_LIST, deferred_push_input_sensor_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_AI_SERVICE_SETTINGS_LIST, deferred_push_ai_service_settings_list},
       {MENU_ENUM_LABEL_DEFERRED_ACCESSIBILITY_SETTINGS_LIST, deferred_push_accessibility_settings_list},
       {MENU_ENUM_LABEL_DISC_INFORMATION, deferred_push_disc_information},

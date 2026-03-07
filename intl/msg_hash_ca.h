@@ -232,6 +232,14 @@ MSG_HASH(
    "Tanca el RetroArch. La configuració es desarà en sortir."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Tanca el RetroArch. La configuració no es desarà en sortir."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Tanca el RetroArch. Matar el programa de manera forçada (amb SIGKILL, etc.) finalitzarà el RetroArch sense desar la configuració. En sistemes Unix, SIGINT/SIGTERM permet un tancament net, el que inclou que es desi la configuració si està activat."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Sincronitza ara"
    )
@@ -254,14 +262,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Resol tots els conflictes descarregant els fitxers del servidor i reemplaça els fitxers locals."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Tanca el RetroArch. La configuració no es desarà en sortir."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Tanca el RetroArch. Matar el programa de manera forçada (amb SIGKILL, etc.) finalitzarà el RetroArch sense desar la configuració. En sistemes Unix, SIGINT/SIGTERM permet un tancament net, el que inclou que es desi la configuració si està activat."
    )
 
 /* Main Menu > Load Core */
@@ -2399,6 +2399,10 @@ MSG_HASH(
 /* Settings > Video > HDR */
 
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_VIDEO_HDR_ENABLE,
+   "Estableix el mode de sortida HDR si el teu monitor en té l'opció. Nota: el mode sRGB pot aclarir les màscares de shaders CRT perquè en compondre les imatges per part del sistema operatiu, es converteix la imatge a HDR10 després d'aplicar la màscara."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
    "Apagat"
    )
@@ -3177,8 +3181,36 @@ MSG_HASH(
    "Ajusta la sensibilitat de l'acceleròmetre."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Sensor d'orientació"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Gira els eixos de l'acceleròmetre i el giroscòpi per coincidir amb l'orientació del dispositiu."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Automàtic"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_0,
+   "0º"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_90,
+   "90º"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_180,
+   "180º"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_270,
+   "270º"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Ajusta la sensibilitat del giroscopi."
+   "Ajusta la sensibilitat del giroscopi."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3320,6 +3352,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "Canvia les opcions de vibració i resposta hàptica."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Sensors de moviment i llum"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "Canvia la configuració de l'acceleròmetre, giroscopi i il·luminació."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -4866,8 +4906,16 @@ MSG_HASH(
    "Fes servir el reproductor integrat"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "Mostra els fitxers que son compatibles amb el reproductor."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "Fes servir el visualitzador d’imatges integrat"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "Mostra les imatges que son compatibles amb l'explorador de fitxers."
    )
 
 /* Settings > Frame Throttle */
@@ -6409,11 +6457,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Mostra “Reinicia”"
+   "Mostra 'Reiniciar'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Mostra l’opció de reiniciar el contingut."
+   "Mostra l'opció de reiniciar el contingut."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
@@ -6421,7 +6469,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Mostra l’opció “Tanca el contingut”."
+   "Mostra l'opció de tancar el contingut."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8938,11 +8986,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "Reinicia"
+   "Reiniciar"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Reinicia el contingut des de l'inici."
+   "Activa el reinici per programari. Clica el botó Start en el RetroPad per activar el reinici complet."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,

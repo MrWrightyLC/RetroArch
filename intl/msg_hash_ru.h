@@ -232,6 +232,14 @@ MSG_HASH(
    "Закрыть RetroArch. Сохранение конфигурации при выходе включено."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Закрыть RetroArch. Сохранение конфигурации при выходе отключено."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Выход из RetroArch. Закрытие программы любым принудительным способом (SIGKILL и т.д.) выгружает RetroArch без сохранения конфигурации. На Unix-подобных системах SIGINT/SIGTERM позволяет выполнить чистую деинициализацию с сохранением конфигурации, если данная настройка включена."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Синхронизировать сейчас"
    )
@@ -254,14 +262,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Решить все конфликты путём скачивания файлов с сервера и замены локальных копий."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Закрыть RetroArch. Сохранение конфигурации при выходе отключено."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Выход из RetroArch. Закрытие программы любым принудительным способом (SIGKILL и т.д.) выгружает RetroArch без сохранения конфигурации. На Unix-подобных системах SIGINT/SIGTERM позволяет выполнить чистую деинициализацию с сохранением конфигурации, если данная настройка включена."
    )
 
 /* Main Menu > Load Core */
@@ -401,7 +401,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DOWNLOAD_CORE_SYSTEM_FILES,
-   "Скачать системные файлы"
+   "Скачать системные файлы ядер"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_DOWNLOAD_CORE_SYSTEM_FILES,
@@ -1362,7 +1362,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SYSTEM_SETTINGS,
-   "Системные"
+   "Система"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_TIMING_SETTINGS,
@@ -3205,8 +3205,20 @@ MSG_HASH(
    "Настройка чувствительности акселерометра."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Ориентация датчиков"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Поверните оси акселерометра и гироскопа для совпадения с ориентацией устройства."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Автоматически"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Настройка чувствительности гироскопа."
+   "Настройка чувствительности гироскопа."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3350,6 +3362,14 @@ MSG_HASH(
    "Настройки тактильной отдачи и вибрации."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Датчики движения/света"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "Настройки акселерометра, гироскопа и датчика освещённости."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
    "Управление меню"
    )
@@ -3474,7 +3494,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_ALL_USERS_CONTROL_MENU,
-   "Разрешать всем пользователям управлять меню. Если откл., управление меню доступно только для Игрока 1."
+   "Разрешать всем пользователям управлять меню. При отключении управлять меню может только Игрок 1."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SINGLECLICK_PLAYLISTS,
@@ -4093,7 +4113,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_DEVICE_RESERVED_DEVICE_NAME,
-   "Устройство для данного игрока"
+   "Устройство зарезервировано для данного игрока"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_DEVICE_RESERVED_DEVICE_NAME,
@@ -4514,19 +4534,19 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMAP_SAVE_ON_EXIT,
-   "Сохранять файлы привязок при выходе"
+   "Сохранять привязки ввода при выходе"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_REMAP_SAVE_ON_EXIT,
-   "Сохранять изменения в любом загруженном файле привязок при закрытии контента или выходе из RetroArch."
+   "Сохранять изменения в любом загруженном файле привязок ввода при закрытии контента или выходе из RetroArch."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_GAME_SPECIFIC_OPTIONS,
-   "Автозагрузка файлов опций ядра для контента"
+   "Автозагрузка опций ядра для контента"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_GAME_SPECIFIC_OPTIONS,
-   "Загружать настройки опций при запуске ядра."
+   "Загружать файлы с изменениями опций ядра при запуске."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUTO_OVERRIDES_ENABLE,
@@ -4542,7 +4562,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUTO_REMAPS_ENABLE,
-   "Загружать пользовательские привязки ввода при запуске."
+   "Загружать изменения привязок ввода при запуске."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INITIAL_DISK_CHANGE_ENABLE,
@@ -4898,8 +4918,16 @@ MSG_HASH(
    "Встроенный медиаплеер"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "Показывать в браузере файлы, поддерживаемые медиаплеером."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "Встроенный просмотр изображений"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "Показывать в браузере файлы, поддерживаемые просмотрщиком изображений."
    )
 
 /* Settings > Frame Throttle */
@@ -5732,7 +5760,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_NOTIFICATION_SHOW_CONFIG_OVERRIDE_LOAD,
-   "Показывать сообщение при загрузке переопределения конфигурации."
+   "Показывать сообщение при загрузке файла переопределения конфигурации."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_NOTIFICATION_SHOW_SET_INITIAL_DISK,
@@ -6246,11 +6274,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_SHOW_RESTART_RETROARCH,
-   "Показывать 'Перезапуск RetroArch'"
+   "Показывать 'Перезапуск'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_SHOW_RESTART_RETROARCH,
-   "Показывать опцию 'Перезапуск RetroArch' в главном меню."
+   "Показывать опцию перезапуска RetroArch в главном меню."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_SETTINGS,
@@ -6453,11 +6481,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Показывать 'Перезапуск'"
+   "Показывать 'Перезагрузка'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Показывать опцию 'Перезапуск'."
+   "Показывать опцию сброса контента."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
@@ -6465,7 +6493,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Показывать опцию 'Закрыть контент'."
+   "Показывать опцию закрытия контента."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8982,11 +9010,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "Перезапуск"
+   "Перезагрузка"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Перезапустить загруженный контент. Для аппаратного сброса нажмите Start."
+   "Выполнить мягкую перезагрузку. Нажатие Start осуществляет жёсткий сброс."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
@@ -9138,7 +9166,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_OPTIONS,
-   "Изменение настроек для контента."
+   "Изменение настроек загруженного ядра."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INPUT_REMAPPING_OPTIONS,
@@ -9146,7 +9174,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_INPUT_REMAPPING_OPTIONS,
-   "Изменение управления для контента."
+   "Настройка управления для загруженного контента."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_CHEAT_OPTIONS,
@@ -9178,7 +9206,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_OVERRIDE_OPTIONS,
-   "Настройки переопределений глобальной конфигурации."
+   "Меню переопределения настроек глобальной конфигурации."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACHIEVEMENT_LIST,
@@ -9197,7 +9225,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CORE_OPTION_OVERRIDE_LIST,
-   "Создание и удаление переопределений опций для текущего контента."
+   "Создание и удаление переопределения настроек для текущего контента."
    )
 
 /* Quick Menu > Options > Manage Core Options */
@@ -10005,7 +10033,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMOVE_CURRENT_CONFIG_OVERRIDE_CORE,
-   "Удалить переопределения ядра"
+   "Удалить переопределения для ядра"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_CORE,
@@ -10017,11 +10045,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SAVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
-   "Создать файл переопределения настроек, который будет применяться для всего каталога из которого был загружен текущий контент. Имеет приоритет над основной конфигурацией."
+   "Создать файл переопределения настроек, который будет применяться ко всем файлам, расположенным в папке с текущим контентом. Имеет приоритет над основной конфигурацией."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
-   "Удалить переопределения каталога контента"
+   "Удалить переопределения для каталога контента"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR,
@@ -10037,7 +10065,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME,
-   "Удалить переопределения игры"
+   "Удалить переопределения для игры"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME,
@@ -12667,7 +12695,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_RESET,
-   "Сброс"
+   "Перезагрузка"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QT_RESET_ALL,
@@ -14065,7 +14093,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_RESET,
-   "Сброс"
+   "Перезагрузка"
    )
 MSG_HASH(
    MSG_RESTARTING_RECORDING_DUE_TO_DRIVER_REINIT,

@@ -224,6 +224,14 @@ MSG_HASH(
    "Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor cumasaithe."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor díchumasaithe. Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor díchumasaithe."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Scoir RetroArch. Má mharaíonn tú an clár ar aon bhealach crua (SIGKILL, srl.), cuirfear deireadh le RetroArch gan an chumraíocht a shábháil ar aon nós. Ar chórais Unix, ceadaíonn SIGINT/SIGTERM díthosú glan lena n-áirítear sábháil chumraíochta má tá sé cumasaithe."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Sioncrónaigh Anois"
    )
@@ -246,14 +254,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Réitigh gach coimhlint trí chomhaid an fhreastalaí a íoslódáil, agus cóipeanna áitiúla a athsholáthar."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor díchumasaithe. Scoir feidhmchlár RetroArch. Tá sábháil chumraíochta ar scor díchumasaithe."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Scoir RetroArch. Má mharaíonn tú an clár ar aon bhealach crua (SIGKILL, srl.), cuirfear deireadh le RetroArch gan an chumraíocht a shábháil ar aon nós. Ar chórais Unix, ceadaíonn SIGINT/SIGTERM díthosú glan lena n-áirítear sábháil chumraíochta má tá sé cumasaithe."
    )
 
 /* Main Menu > Load Core */
@@ -2407,6 +2407,10 @@ MSG_HASH(
 /* Settings > Video > HDR */
 
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_VIDEO_HDR_ENABLE,
+   "Socraigh mód aschuir HDR má thacaíonn an taispeáint leis. Tabhair faoi deara: féadfaidh scRGB maisc scáthaithe CRT dochta a mhaolú toisc go n-athraíonn comhdhéanamh an chórais oibriúcháin go HDR10 tar éis an masc a chur i bhfeidhm."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_MODE_OFF,
    "As"
    )
@@ -3185,8 +3189,20 @@ MSG_HASH(
    "Coigeartaigh íogaireacht an Luasmhéadair."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Treoshuíomh an Braiteora"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Rothlaigh aiseanna an luasghéaraitheora agus an ghiroscóip chun treoshuíomh an ghléis a mheaitseáil."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Uathoibríoch"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Coigeartaigh íogaireacht an Ghiroscóip."
+   "Coigeartaigh íogaireacht an Ghiroscóip."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3328,6 +3344,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "Athraigh socruithe aiseolais haptic agus creatha."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Braiteoirí Gluaiseachta/Solais"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_SETTINGS,
+   "Athraigh socruithe an luasghéaraitheora, an ghiroscóip agus an tsoilsithe."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -4073,7 +4097,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_DEVICE_RESERVED_DEVICE_NAME,
-   "Gléas In Áirithe don Imreoir seo"
+   "Gléas atá curtha in áirithe don Imreoir seo"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_DEVICE_RESERVED_DEVICE_NAME,
@@ -4878,8 +4902,16 @@ MSG_HASH(
    "Úsáid an Seinnteoir Meán Tógtha Isteach"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "Taispeáin comhaid a dtacaítear leo ag Media Player sa Bhrabhsálaí Comhad."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "Úsáid an Breathnóir Íomhánna Tógtha Isteach"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "Taispeáin comhaid a dtacaítear leo sa Bhrabhsálaí Comhad."
    )
 
 /* Settings > Frame Throttle */
@@ -6429,11 +6461,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Taispeáin 'Atosaigh'"
+   "Taispeáin 'Athshocraigh'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Taispeáin an rogha ábhar atosaithe."
+   "Taispeáin an rogha athshocraithe ábhair."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
@@ -6441,7 +6473,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Taispeáin an rogha 'Dún Ábhar'."
+   "Taispeáin an rogha dúnta ábhair."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8958,11 +8990,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RESTART_CONTENT,
-   "Atosaigh"
+   "Athshocraigh"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Atosaigh an t-ábhar ón tús. Spreagann RetroPad Start athshocrú crua."
+   "Spreagann athshocrú bog. Spreagann RetroPad Tús athshocrú crua."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,

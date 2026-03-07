@@ -220,6 +220,14 @@ MSG_HASH(
    "Fecha o RetroArch.\n\"Salvar configuração ao sair\" está ativado."
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
+   "Fecha o RetroArch.\n\"Salvar configuração ao sair\" está desativado."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
+   "Sair do RetroArch. Matar o programa de qualquer maneira difícil (SIGKILL, etc.) encerrará o RetroArch sem salvar a configuração. Em sistemas baseados em Unix, SIGINT/SIGTERM permite uma 'desinicialização' limpa que inclui salvamento de configuração se ativado."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_NOW,
    "Sincronizar Agora"
    )
@@ -242,14 +250,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
    "Resolver todos os conflitos baixando arquivos do servidor, substituindo as cópias locais."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_QUIT_RETROARCH_NOSAVE,
-   "Fecha o RetroArch.\n\"Salvar configuração ao sair\" está desativado."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_HELP_QUIT_RETROARCH,
-   "Sair do RetroArch. Matar o programa de qualquer maneira difícil (SIGKILL, etc.) encerrará o RetroArch sem salvar a configuração. Em sistemas baseados em Unix, SIGINT/SIGTERM permite uma 'desinicialização' limpa que inclui salvamento de configuração se ativado."
    )
 
 /* Main Menu > Load Core */
@@ -3129,8 +3129,20 @@ MSG_HASH(
    "Ajustar a sensibilidade do Acelerômetro."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_ORIENTATION,
+   "Orientação do Sensor"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_INPUT_SENSOR_ORIENTATION,
+   "Girar os eixos do acelerômetro e do giroscópio para corresponder à orientação do dispositivo."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SENSOR_ORIENTATION_AUTO,
+   "Automático"
+   )
+MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_SENSOR_GYROSCOPE_SENSITIVITY,
-  "Ajustar a sensibilidade do Giroscópio."
+   "Ajustar a sensibilidade do Giroscópio."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_BIND_TIMEOUT,
@@ -3272,6 +3284,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_HAPTIC_FEEDBACK_SETTINGS,
    "Altera as configurações da resposta háptica e a vibração."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_SENSOR_SETTINGS,
+   "Sensores de Movimento/Luz"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MENU_SETTINGS,
@@ -4818,8 +4834,16 @@ MSG_HASH(
    "Utilizar o reprodutor de mídia integrado"
    )
 MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_PLAYER,
+   "Mostrar arquivos suportados pelo Player de Mídia no Navegador de Arquivos."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_USE_BUILTIN_IMAGE_VIEWER,
    "Utilizar o visualizador de imagem integrado"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_USE_BUILTIN_IMAGE_VIEWER,
+   "Mostrar arquivos suportados pelo Visualizador de Imagens no Navegador de Arquivos."
    )
 
 /* Settings > Frame Throttle */
@@ -6365,11 +6389,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Mostrar \"Reiniciar\""
+   "Mostrar 'Reiniciar'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_RESTART_CONTENT,
-   "Mostra a opção de reiniciar o conteúdo."
+   "Mostrar a opção de reiniciar conteúdo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_CLOSE_CONTENT,
@@ -6377,7 +6401,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_CLOSE_CONTENT,
-   "Mostra a opção \"Fechar conteúdo\"."
+   "Mostrar a opção de fechar conteúdo."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_QUICK_MENU_SHOW_SAVESTATE_SUBMENU,
@@ -8874,7 +8898,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Reinicia o conteúdo do início. O botão Start do RetroPad aciona um hard reset."
+   "Acionar reinicialização simples. O RetroPad Start aciona reinicialização completa."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
