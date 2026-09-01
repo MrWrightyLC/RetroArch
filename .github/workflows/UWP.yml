@@ -1,0 +1,163 @@
+name: UWP
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+env:
+  CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+
+jobs:
+  SyncUpstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.WORKFLOW_PAT }}
+
+      - name: Sync with Upstream
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
+        with:
+          target_sync_branch: master
+          target_repo_token: ${{ secrets.WORKFLOW_PAT }}
+          upstream_sync_branch: master
+          upstream_sync_repo: libretro/RetroArch
+          test_mode: false
+
+  Build:
+    needs: SyncUpstream
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: XboxOne
+            name: "RetroArch-XboxOne"
+            config: "ReleaseANGLE"
+            folder: "ReleaseANGLE"
+            appx_pattern: "*ReleaseANGLE.appx"
+            all_cores: false
+          - id: SeriesConsoles
+            name: "RetroArch-SeriesConsoles"
+            config: "Release"
+            folder: "Release"
+            appx_pattern: "*x64.appx"
+            all_cores: false
+    steps:
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Download Dependency Files
+        shell: pwsh
+        run: |
+          if ("${{ matrix.all_cores }}" -eq "true") {
+              $baseUrl = "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"
+              $coresDir = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\"
+              
+              # Scrape the directory listing for all .zip links
+              $page = Invoke-WebRequest -Uri $baseUrl -UseBasicParsing
+              $zipFiles = $page.Links |
+                  Where-Object { $_.href -match '\.zip$' } |
+                  Select-Object -ExpandProperty href
+              foreach ($zip in $zipFiles) {
+                  # hrefs are relative filenames on this server
+                  $fileName = [System.IO.Path]::GetFileName($zip)
+                  $url = $baseUrl + $fileName
+                  Write-Host "Downloading $fileName..."
+                  curl.exe -L $url --output $fileName --retry 3 --retry-delay 2
+                  7z e $fileName -o"$coresDir" -y
+                  Remove-Item $fileName
+              }
+          }
+          if ("${{ matrix.config }}" -eq "ReleaseANGLE") {
+              curl.exe -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/Angle%20Cores.zip" --output Angle_Cores.zip
+              7z x Angle_Cores.zip -aoa -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores" *.* -r -y
+          }
+          curl.exe -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.001" --output DLLs.zip.001
+          curl.exe -L "https://github.com/TheRhysWyrill/RA-Xbox-Files/raw/main/DLLs.zip.002" --output DLLs.zip.002
+          7z x DLLs.zip.001 -o"pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64" *.* -r -y
+          
+          # Clean up unneeded files securely
+          $empty1 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\.empty"
+          $empty2 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\.empty"
+          $citra1 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra2018_libretro.dll"
+          $citra2 = "pkg\msvc-uwp\RetroArch-msvcUWP\cores\x64\cores\citra_libretro.dll"
+          Remove-Item -Path $empty1, $empty2, $citra1, $citra2 -ErrorAction SilentlyContinue
+      - name: Compile Application
+        shell: pwsh
+        run: |
+          msbuild pkg\msvc-UWP\RetroArch-msvcUWP.sln `
+          /p:AppxBundle=Always `
+          /p:UapAppxPackageBuildMode=SideloadOnly `
+          /p:AppxBundlePlatforms="x64" `
+          /p:Configuration="${{ matrix.config }}" `
+          /p:Platform="x64"
+      - name: Grab AppX package
+        shell: pwsh
+        run: |
+          $src = Get-Item "pkg\msvc-uwp\x64\${{ matrix.folder }}\RetroArch-msvcUWP\${{ matrix.appx_pattern }}" | Select-Object -First 1
+          Copy-Item $src.FullName "pkg\msvc-uwp\x64\${{ matrix.name }}.appx"
+      - name: Upload AppX package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ./pkg/msvc-uwp/x64/${{ matrix.name }}.appx
+
+  Publish-release:
+    needs: Build
+    name: Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get current date
+        id: date_step
+        run: echo "date_tag=$(date +'%m-%d-%Y')" >> $GITHUB_OUTPUT
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts/
+
+      - name: Generate Upstream Release Notes
+        run: |
+          git remote add upstream https://github.com/libretro/RetroArch.git 2>/dev/null || true
+          git fetch upstream master
+          PREV_TAG=$(git describe --tags --match="??-??-20??" --abbrev=0 2>/dev/null || echo "")
+          echo "## Upstream Changes" > release_notes.md
+          if [ -z "$PREV_TAG" ]; then
+            git log upstream/master -n 50 --no-merges \
+              --pretty=format:"* %s (%h)" \
+              -- ':!.github' >> release_notes.md
+          else
+            MERGE_COMMIT=$(git log --merges --ancestry-path $PREV_TAG..HEAD -1 --format="%H")
+            UPSTREAM_BASE=$(git log -1 $MERGE_COMMIT --format="%P" | awk '{print $2}')
+            git log $UPSTREAM_BASE..upstream/master --no-merges \
+              --pretty=format:"* %s (%h)" \
+              -- ':!.github' >> release_notes.md
+          fi
+      - name: Create a new release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ steps.date_step.outputs.date_tag }}"
+          name: "Xbox Builds [${{ steps.date_step.outputs.date_tag }}]"
+          body_path: release_notes.md
+          prerelease: false
+          files: |
+            ./artifacts/RetroArch-XboxOne/RetroArch-XboxOne.appx
+            ./artifacts/RetroArch-SeriesConsoles/RetroArch-SeriesConsoles.appx
