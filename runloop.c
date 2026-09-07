@@ -86,6 +86,9 @@
 #include <retro_miscellaneous.h>
 #include <queues/message_queue.h>
 #include <lists/dir_list.h>
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include "frontend/drivers/platform_emscripten.h"
@@ -202,7 +205,7 @@ bool android_get_vfs_authorized_locations(
 #include "gfx/video_thread_wrapper.h"
 #endif
 #include "gfx/video_display_server.h"
-#ifdef HAVE_CRTSWITCHRES
+#ifdef HAVE_MODELINE
 #include "gfx/video_crt_switch.h"
 #endif
 #ifdef HAVE_BLUETOOTH
@@ -6693,7 +6696,7 @@ static enum runloop_state_enum runloop_check_state(
          bool config_save_on_exit = settings->bools.config_save_on_exit;
          menu_st->flags          &= ~MENU_ST_FLAG_PENDING_CONFIG_REPLACE;
          config_replace(config_save_on_exit, menu_st->pending_config_path);
-         return RUNLOOP_STATE_POLLED_AND_SLEEP;
+         return RUNLOOP_STATE_POLLED_AND_CONTINUE;
       }
 #endif
 
@@ -6717,7 +6720,7 @@ static enum runloop_state_enum runloop_check_state(
          menu_st->selection_ptr  = 0;
          menu_st->flags         &= ~MENU_ST_FLAG_PENDING_QUICK_MENU;
          menu_st->flags         &= ~MENU_ST_FLAG_PENDING_STARTUP_PAGE;
-         return RUNLOOP_STATE_POLLED_AND_SLEEP;
+         return RUNLOOP_STATE_POLLED_AND_CONTINUE;
       }
       /* Navigate to initial startup page */
       else if (menu_st->flags & MENU_ST_FLAG_PENDING_STARTUP_PAGE)
@@ -6808,7 +6811,7 @@ static enum runloop_state_enum runloop_check_state(
          }
 
          menu_st->flags &= ~MENU_ST_FLAG_PENDING_STARTUP_PAGE;
-         return RUNLOOP_STATE_POLLED_AND_SLEEP;
+         return RUNLOOP_STATE_POLLED_AND_CONTINUE;
       }
       else if ((menu_st->flags & MENU_ST_FLAG_PENDING_CLOSE_CONTENT)
             || (menu_st->flags & MENU_ST_FLAG_PENDING_ENV_SHUTDOWN_FLUSH))
@@ -6898,7 +6901,7 @@ static enum runloop_state_enum runloop_check_state(
             menu_st->flags |= MENU_ST_FLAG_PENDING_RELOAD_CORE;
             menu_st->flags |= MENU_ST_FLAG_PENDING_ENV_SHUTDOWN_FLUSH;
          }
-         return RUNLOOP_STATE_POLLED_AND_SLEEP;
+         return RUNLOOP_STATE_POLLED_AND_CONTINUE;
       }
       else if (!menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
                settings, action, current_time))
@@ -6941,7 +6944,7 @@ static enum runloop_state_enum runloop_check_state(
                             |  MENU_ST_FLAG_PREVENT_POPULATE;
          }
 #endif
-         return RUNLOOP_STATE_POLLED_AND_SLEEP;
+         return RUNLOOP_STATE_POLLED_AND_CONTINUE;
       }
 
       if (focused || !(runloop_st->flags & RUNLOOP_FLAG_IDLE))
@@ -7043,7 +7046,7 @@ static enum runloop_state_enum runloop_check_state(
             command_event(CMD_EVENT_RESUME, NULL);
 
          menu_dialog_confirm_clear(menu_st);
-         return RUNLOOP_STATE_POLLED_AND_SLEEP;
+         return RUNLOOP_STATE_POLLED_AND_CONTINUE;
       }
 
       if (     !focused
@@ -7914,6 +7917,7 @@ end:
  **/
 int runloop_iterate(void)
 {
+   retro_time_t pace_limit_min;
    input_driver_state_t         *input_st = input_state_get_ptr();
    audio_driver_state_t         *audio_st = audio_state_get_ptr();
    video_driver_state_t         *video_st = video_state_get_ptr();
@@ -7924,6 +7928,7 @@ int runloop_iterate(void)
    runloop_state_t *runloop_st            = &runloop_state;
    bool vrr_runloop_enable                = settings->bools.vrr_runloop_enable;
    retro_time_t current_time              = cpu_features_get_time_usec();
+
 #ifdef HAVE_NETWORKING
    bool netplay_is_enabled                = netplay_driver_ctl(RARCH_NETPLAY_CTL_IS_ENABLED, NULL);
    bool netplay_allow_timeskip            = netplay_driver_ctl(RARCH_NETPLAY_CTL_ALLOW_TIMESKIP, NULL);
@@ -8059,7 +8064,19 @@ int runloop_iterate(void)
          runloop_st->flags                &= ~RUNLOOP_FLAG_CORE_RUNNING;
          command_event(CMD_EVENT_QUIT, NULL);
          return -1;
+      case RUNLOOP_STATE_POLLED_AND_CONTINUE:
+         runloop_st->pace = RUNLOOP_PACE_NONE;
+         AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_WROTE);
+         /* Config replaced, startup page pushed, core loaded, dialog
+          * command run, list cache flushed: one-shot work is done and
+          * the next iteration should begin fresh. Nothing to wait for;
+          * the 10 ms below was a visible stall on every one of them. */
+         if (runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED)
+            return -1;
+         return 1;
       case RUNLOOP_STATE_POLLED_AND_SLEEP:
+         runloop_st->pace = RUNLOOP_PACE_NONE;
+         AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_WROTE);
          if (runloop_st->flags & RUNLOOP_FLAG_SHUTDOWN_INITIATED)
             return -1;
 #ifdef HAVE_NETWORKING
@@ -8071,6 +8088,12 @@ int runloop_iterate(void)
 #else
 #if defined(HAVE_COCOATOUCH)
          if (!(uico_st->flags & UICO_ST_FLAG_IS_ON_FOREGROUND))
+#endif
+#if defined(ANDROID)
+         /* When IDLE, android_input_poll() already blocked on the looper
+          * until the OS sent something; a sleep on top only delays the
+          * response to it. Unfocused-but-foreground still sleeps. */
+         if (!(runloop_st->flags & RUNLOOP_FLAG_IDLE))
 #endif
             retro_sleep(10);
 #endif
@@ -8113,15 +8136,25 @@ int runloop_iterate(void)
 #ifdef HAVE_MENU
          /* Rely on vsync throttling unless VRR is enabled and menu throttle is disabled. */
          if (vrr_runloop_enable && !settings->bools.menu_throttle_framerate)
+         {
+            /* Returns before the pace block: record what holds this
+             * path - vsync if it is blocking, nothing otherwise. */
+            runloop_st->pace = RUNLOOP_PACE_NONE;
+            if (     settings->bools.video_vsync
+                  && !(input_st->flags & INP_FLAG_NONBLOCKING)
+                  && !(runloop_st->flags & RUNLOOP_FLAG_FORCE_NONBLOCK))
+               runloop_st->pace |= RUNLOOP_PACE_VSYNC;
+            AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_WROTE);
             return 0;
+         }
          /* When content is actively running behind the menu (menu_pause_libretro
           * is off), core_run() -> audio_driver_write() already paces the iterate
           * loop at the audio buffer's drain rate -- i.e. the core's natural fps.
-          * Layering the refresh-rate retro_sleep() throttle below on top of that
-          * is redundant double-pacing, and retro_sleep() resolves to OS Sleep()
-          * whose granularity is ~15 ms on Windows by default -- coarser than
-          * typical audio low-water marks, so the sleep overshoots and stutters
-          * audio.  Defer pacing to the audio backpressure path. */
+          * Layering the refresh-rate timer throttle below on top of that is
+          * redundant double-pacing: two clocks holding one loop drift
+          * against each other and the slower one wins, so the sleep lands
+          * after the audio low-water mark and stutters audio.  Defer
+          * pacing to the audio backpressure path. */
          else if (   audio_sync
                   && runloop_is_libretro_running(runloop_st, menu_pause_libretro))
          {
@@ -8263,9 +8296,84 @@ end:
          runloop_set_frame_limit(&video_st->av_info, 1.0f);
    }
 
-   /* if there's a fast forward limit, inject sleeps to keep from going too fast. */
+   /* Record which sources held the pace this iteration. The other three
+    * block inside their own subsystems; only the timer is decided here.
+    * See enum runloop_pace_source.
+    *
+    * Computed at the end of the iteration and read by the overlay during
+    * the next one - one frame stale by design. It must not be reset at
+    * the top of the iteration: the overlay reads it from inside
+    * video_driver_frame(), which runs between the top and here, and a
+    * reset there made it read NONE on every frame. Paths that return
+    * before this block set it themselves. */
+   runloop_st->pace = RUNLOOP_PACE_NONE;
+   if (runloop_st->pace_external)
+      runloop_st->pace |= RUNLOOP_PACE_EXTERNAL;
+   /* How long the last iteration actually took, smoothed. One clock
+    * read on a path that already takes several, and the only way to
+    * tell a source that is holding the loop from one that merely says
+    * it is - headless SDL2 with no vblank sets the vsync bit and
+    * blocks on nothing. */
+   {
+      retro_time_t now = cpu_features_get_time_usec();
+      if (runloop_st->pace_iter_last)
+      {
+         retro_time_t delta = now - runloop_st->pace_iter_last;
+         /* Samples longer than a quarter second are not pacing, they
+          * are a stall - a state load, a shader rebuild, a menu that
+          * blocked - and one of them dragged an eight-sample average
+          * from 60 fps to 8 in testing, taking several frames to
+          * recover. Nothing that is really holding the loop runs
+          * slower than 4 fps, so they are dropped rather than
+          * smoothed. */
+         if (runloop_pace_sample_usable(delta))
+         {
+            if (runloop_st->pace_period_usec)
+               runloop_st->pace_period_usec +=
+                     (delta - runloop_st->pace_period_usec) / 8;
+            else
+               runloop_st->pace_period_usec = delta;
+         }
+      }
+      runloop_st->pace_iter_last = now;
+   }
+   /* What the frame limiter below will pace to. Normally the
+    * fast-forward limit; replaced by the content frame time when
+    * nothing else is pacing at all (see below). */
+   pace_limit_min   = runloop_st->frame_limit_minimum_time;
+   /* The vsync bit reads the driver's blocking state, not the setting:
+    * fast-forward (INP_FLAG_NONBLOCKING) and RUNLOOP_FLAG_FORCE_NONBLOCK
+    * both put the driver into non-blocking presentation while the
+    * setting stays true. */
+   if (     settings->bools.video_vsync
+         && !(input_st->flags & INP_FLAG_NONBLOCKING)
+         && !(runloop_st->flags & RUNLOOP_FLAG_FORCE_NONBLOCK))
+      runloop_st->pace |= RUNLOOP_PACE_VSYNC;
+   /* The live blocking state, not the audio_sync setting. Fast-forward
+    * puts the driver into non-blocking mode for a few frames while
+    * audio_sync stays true, and during those frames audio is not
+    * holding anything. */
+   /* ...and a write actually happened this iteration. Not a predicate
+    * on who might have written: the menu feeds a frame of silence
+    * through the same blocking funnel while the core is paused, with
+    * the mixer and thumbnail audio mixed in, so "libretro running" was
+    * the wrong test. The flag is set at the write sites. */
+   if (     (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_ACTIVE)
+         && !(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_NONBLOCK)
+         && (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_WROTE))
+      runloop_st->pace |= RUNLOOP_PACE_AUDIO;
+   AUDIO_FLAGS_CLEAR(audio_st, AUDIO_FLAG_WROTE);
+   /* Mirrors the gate at the video_driver_scanline_after_frame() call
+    * site, which skips the wait under fast-forward. A failed
+    * calibration zeroes SCANLINE_NEXT, so the target test covers the
+    * unlocked case. */
+   if (     settings->bools.video_scanline_sync
+         && video_st->scanline[SCANLINE_NEXT]
+         && !(input_st->flags & INP_FLAG_NONBLOCKING))
+      runloop_st->pace |= RUNLOOP_PACE_SCANLINE;
    {
       retro_time_t frame_limit_min = runloop_st->frame_limit_minimum_time;
+      /* Identical to the condition the sleep below used inline. */
       if (   (frame_limit_min)
           && (   (vrr_runloop_enable)
               || (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION)
@@ -8275,6 +8383,68 @@ end:
                       || !(runloop_st->flags & RUNLOOP_FLAG_FOCUSED)))
 #endif
               || (runloop_st->flags & RUNLOOP_FLAG_PAUSED)))
+         runloop_st->pace |= RUNLOOP_PACE_TIMER;
+   }
+
+   /* Nothing to present to - a minimised or zero-sized window, a
+    * surface the compositor has suspended, a swapchain that could not
+    * be created. The video path still runs and still costs nothing
+    * much, but the frame goes nowhere, and none of the display-side
+    * pacing above can hold the loop: there is no vblank to block on
+    * and no scanout to lock to. Left alone, the loop spins.
+    *
+    * The context drivers used to sleep inside swap_buffers() for this,
+    * where the frontend could not see it and it stacked with whatever
+    * else was pacing. The wait belongs here, with the rest of the
+    * pacing, and only when nothing else is already holding the loop -
+    * audio still blocks with the window hidden, and fast-forward is
+    * meant to run unthrottled. */
+   if (     !(runloop_st->pace & (RUNLOOP_PACE_VSYNC | RUNLOOP_PACE_AUDIO
+                                | RUNLOOP_PACE_SCANLINE | RUNLOOP_PACE_TIMER))
+         && !(input_st->flags & INP_FLAG_NONBLOCKING)
+         && !video_context_driver_presentable())
+      runloop_st->pace |= RUNLOOP_PACE_NOWINDOW;
+
+   if (runloop_st->pace & RUNLOOP_PACE_NOWINDOW)
+   {
+      /* One frame of content time, so a window that comes back is
+       * noticed within a frame and the core keeps its own rate while
+       * hidden. Under an external clock the caller is already back
+       * within a frame. */
+      if (!(runloop_st->pace & RUNLOOP_PACE_EXTERNAL))
+         retro_sleep_us((unsigned)runloop_content_frame_time_us(video_st->core_hz));
+      return 1;
+   }
+
+   /* Nothing at all is holding the loop: vsync off, audio sync off or
+    * not writing, no scanline lock, and no fast-forward limit to fall
+    * back on - frame_limit_minimum_time is zero whenever the ratio is
+    * "unlimited", which is the default, so the branch above cannot
+    * engage however slowly the core is running. The loop then spins as
+    * fast as the machine allows: a core with a light frame runs at
+    * hundreds of frames a second, burning a core and drowning the
+    * display in frames nobody asked for. It is not fast-forward - the
+    * user did not ask for it - it is the absence of anyone saying when
+    * the next frame is due.
+    *
+    * So the timer takes it, at the content's own rate: 1.0x, the speed
+    * the core is meant to run at, which is what every other pacing
+    * source would have produced. Only when the record is empty, so it
+    * never competes with one that is doing the job, and never under
+    * fast-forward, which is the case where running unthrottled is the
+    * point. */
+   if (runloop_pace_gap_engages(runloop_st->pace,
+            (input_st->flags & INP_FLAG_NONBLOCKING) != 0,
+            (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION) != 0))
+   {
+      runloop_st->pace         |= RUNLOOP_PACE_TIMER;
+      pace_limit_min            = runloop_content_frame_time_us(video_st->core_hz);
+   }
+
+   /* if there's a fast forward limit, inject sleeps to keep from going too fast. */
+   {
+      retro_time_t frame_limit_min = pace_limit_min;
+      if (runloop_st->pace & RUNLOOP_PACE_TIMER)
       {
          const retro_time_t end_frame_time  = cpu_features_get_time_usec();
          const retro_time_t to_sleep_us     = (
@@ -8290,7 +8460,11 @@ end:
          const retro_time_t to_sleep        = to_sleep_us;
 #endif
 
-         if (to_sleep > 0)
+         /* Under an external clock the sleep is the caller's; the
+          * schedule is re-anchored below so it does not carry a
+          * backlog into the first frame after the clock lets go. */
+         if (     to_sleep > 0
+               && !(runloop_st->pace & RUNLOOP_PACE_EXTERNAL))
          {
             /* Combat jitter a bit. */
             runloop_st->frame_limit_last_time += frame_limit_min;
@@ -8311,9 +8485,12 @@ end:
       }
    }
 
-   /* Frame delay */
-   if (     !(input_st->flags & INP_FLAG_NONBLOCKING)
-         || (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION))
+   /* Frame delay. Not under an external clock: it is a sleep before
+    * the core runs, and the caller has to be back before the next
+    * tick. */
+   if (     !(runloop_st->pace & RUNLOOP_PACE_EXTERNAL)
+         && (   !(input_st->flags & INP_FLAG_NONBLOCKING)
+             || (runloop_st->flags & RUNLOOP_FLAG_FASTMOTION)))
       video_frame_delay(video_st, settings);
 
    /* Set paused state after x frames */

@@ -79,6 +79,9 @@
 
 #include "../ai/game_ai.h"
 #include <compat/strl.h>
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 
 /* Force a helper out of line even though it has a single call site.
  * Follows the RXML_NOINLINE precedent in
@@ -399,10 +402,10 @@ input_driver_t *input_drivers[] = {
 #ifdef HAVE_DINPUT
    &input_dinput,
 #endif
-#if (defined(HAVE_SDL) || defined(HAVE_SDL2)) && !(defined(HAVE_COCOA) || defined(HAVE_COCOA_METAL))
+#if (defined(HAVE_SDL) || defined(HAVE_SDL2)) && !defined(HAVE_COCOA)
    &input_sdl,
 #endif
-#if defined(HAVE_SDL3) && !(defined(HAVE_COCOA) || defined(HAVE_COCOA_METAL))
+#if defined(HAVE_SDL3) && !defined(HAVE_COCOA)
    &input_sdl3,
 #endif
 #if defined(DINGUX) && defined(HAVE_SDL_DINGUX)
@@ -423,7 +426,7 @@ input_driver_t *input_drivers[] = {
 #if defined(__linux__) && !defined(ANDROID)
    &input_linuxraw,
 #endif
-#if defined(HAVE_COCOA) || defined(HAVE_COCOATOUCH) || defined(HAVE_COCOA_METAL)
+#if defined(HAVE_COCOA) || defined(HAVE_COCOATOUCH)
    &input_cocoa,
 #endif
 #ifdef __QNX__
@@ -4471,7 +4474,7 @@ INPUT_NOINLINE static void input_poll_overlay(
 
    /* Block other touchscreen input as needed. */
    if (     button_pressed
-#ifdef IOS
+#if TARGET_OS_IPHONE
          || (ptr_state->device_mask & (1 << RETRO_DEVICE_LIGHTGUN))
          || (ol->flags & INPUT_OVERLAY_BLOCKED))
 #else

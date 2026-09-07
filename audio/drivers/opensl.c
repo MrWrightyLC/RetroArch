@@ -75,6 +75,13 @@ typedef struct sl
     * ARM/AArch64, so the reads need acquire semantics to pair with
     * the acq_rel RMWs - the previous plain volatile reads had none. */
    retro_atomic_int_t buffered_blocks;
+   /* Frames the device has finished with, for the sink rate estimate.
+    * The callback fires once per block the device has played, so it is
+    * the device's own clock ticking - the same thing the WASAPI pump
+    * and the ASIO callback count. Written only by the callback, read by
+    * the frontend through sl_frames_consumed(). */
+   retro_atomic_size_t consumed;
+   unsigned frames_per_block;
    bool nonblock;
    bool is_paused;
 } sl_t;
@@ -83,7 +90,22 @@ static void opensl_callback(SLAndroidSimpleBufferQueueItf bq, void *ctx)
 {
    sl_t *sl = (sl_t*)ctx;
    retro_atomic_fetch_sub_int(&sl->buffered_blocks, 1);
+   /* A block the device has played: device time, whatever the writer
+    * managed to supply. */
+   retro_atomic_fetch_add_size(&sl->consumed, sl->frames_per_block);
    scond_signal(sl->cond);
+}
+
+/* Frames the device has taken since the player started. Counting the
+ * blocks it has finished with counts device time; there is no queue to
+ * subtract, unlike ALSA, because a block is only handed back once it
+ * has been played. */
+static size_t sl_frames_consumed(void *data)
+{
+   sl_t *sl = (sl_t*)data;
+   if (!sl)
+      return 0;
+   return retro_atomic_load_acquire_size(&sl->consumed);
 }
 
 #define GOTO_IF_FAIL(x) do { \
@@ -146,6 +168,7 @@ static void *sl_init(const char *device, unsigned rate, unsigned latency,
    /* calloc zero-fill is not a portable initializer for an atomic -
     * initialize it explicitly before anything can touch it. */
    retro_atomic_int_init(&sl->buffered_blocks, 0);
+   retro_atomic_size_init(&sl->consumed, 0);
 
    RARCH_LOG("[OpenSL] Requested audio latency: %u ms.\n", latency);
 
@@ -228,7 +251,8 @@ static void *sl_init(const char *device, unsigned rate, unsigned latency,
    }
    GOTO_IF_FAIL(SLObjectItf_Realize(sl->buffer_queue_object, SL_BOOLEAN_FALSE));
 
-   sl->buf_size     = frames_per_block * frame_size;
+   sl->buf_size          = frames_per_block * frame_size;
+   sl->frames_per_block  = frames_per_block;
 
    sl->buffer       = (uint8_t**)calloc(sizeof(uint8_t*), sl->buf_count);
    if (!sl->buffer)
@@ -365,15 +389,17 @@ static ssize_t sl_write(void *data, const void *s, size_t len)
       if (sl->buffer_ptr >= sl->buf_size)
       {
          SLresult res     = (*sl->buffer_queue)->Enqueue(sl->buffer_queue, sl->buffer[sl->buffer_index], sl->buf_size);
-         sl->buffer_index = (sl->buffer_index + 1) % sl->buf_count;
-         retro_atomic_fetch_add_int(&sl->buffered_blocks, 1);
-         sl->buffer_ptr   = 0;
 
+         /* A block the device refused is not on the device: it is not
+          * counted, and the index stays on it. */
          if (res != SL_RESULT_SUCCESS)
          {
             RARCH_ERR("[OpenSL] Failed to write. Error: 0x%x.\n", (unsigned)res);
             return -1;
          }
+         sl->buffer_index = (sl->buffer_index + 1) % sl->buf_count;
+         retro_atomic_fetch_add_int(&sl->buffered_blocks, 1);
+         sl->buffer_ptr   = 0;
       }
    }
 
@@ -395,8 +421,16 @@ static size_t sl_wait_writable(void *data, size_t len)
    for (;;)
    {
       int buffered = retro_atomic_load_acquire_int(&sl->buffered_blocks);
-      avail = ((sl->buf_count - buffered - 1) * sl->buf_size
-            + (sl->buf_size - (int)sl->buffer_ptr));
+      /* Whole blocks not on the device, less the one being filled,
+       * plus what is left of that one. With every block enqueued there
+       * is no block to fill and the space is nil; said so, rather than
+       * left to the unsigned arithmetic that only came to zero because
+       * buffer_ptr is always zero in that state. */
+      if (buffered >= (int)sl->buf_count)
+         avail = 0;
+      else
+         avail = ((size_t)(sl->buf_count - buffered - 1) * sl->buf_size
+               + (sl->buf_size - sl->buffer_ptr));
       if (avail >= len)
          return avail;
       slock_lock(sl->lock);
@@ -447,5 +481,6 @@ audio_driver_t audio_opensl = {
    sl_write_avail,
    sl_buffer_size,
    NULL, /* write_raw */
-   sl_wait_writable
+   sl_wait_writable,
+   sl_frames_consumed
 };

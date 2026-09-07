@@ -85,6 +85,9 @@ void android_app_set_window_settings(bool notch_write_over,
 
 #ifdef HAVE_LAKKA
 #include <time.h>
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 #endif
 
 /* Compile-time upper bounds for setting array sizes.
@@ -149,7 +152,6 @@ enum audio_driver_enum
    AUDIO_AUDIOIO,
    AUDIO_OSS,
    AUDIO_ALSA,
-   AUDIO_ALSATHREAD,
    AUDIO_TINYALSA,
    AUDIO_ROAR,
    AUDIO_AL,
@@ -164,7 +166,6 @@ enum audio_driver_enum
    AUDIO_DSOUND,
    AUDIO_WASAPI,
    AUDIO_COREAUDIO,
-   AUDIO_COREAUDIO3,
    AUDIO_PS3,
    AUDIO_XENON360,
    AUDIO_WII,
@@ -182,7 +183,6 @@ enum audio_driver_enum
 enum microphone_driver_enum
 {
    MICROPHONE_ALSA = AUDIO_NULL + 1,
-   MICROPHONE_ALSATHREAD,
    MICROPHONE_SDL2,
    MICROPHONE_SDL3,
    MICROPHONE_WASAPI,
@@ -547,9 +547,10 @@ static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_AL;
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_PULSE;
 #elif defined(HAVE_PIPEWIRE)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_PIPEWIRE;
-#elif defined(HAVE_ALSA) && defined(HAVE_THREADS)
-static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_ALSATHREAD;
 #elif defined(HAVE_ALSA)
+/* Was AUDIO_ALSATHREAD when built with threads. That driver is gone and
+ * the threaded pipeline, on by default, does what it did from the audio
+ * thread - and more, since the resampler moves off the frame too. */
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_ALSA;
 #elif defined(HAVE_TINYALSA)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_TINYALSA;
@@ -559,8 +560,6 @@ static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_AUDIOIO;
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_OSS;
 #elif defined(HAVE_JACK)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_JACK;
-#elif defined(HAVE_COREAUDIO3)
-static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_COREAUDIO3;
 #elif defined(HAVE_COREAUDIO)
 static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_COREAUDIO;
 #elif defined(HAVE_WASAPI)
@@ -597,10 +596,11 @@ static const enum audio_driver_enum AUDIO_DEFAULT_DRIVER = AUDIO_NULL;
 #if defined(HAVE_WASAPI)
 /* The default mic driver on Windows is WASAPI if it's available. */
 static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_WASAPI;
-#elif defined(HAVE_ALSA) && defined(HAVE_THREADS)
-/* The default mic driver on Linux is the threaded ALSA driver, if available. */
-static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_ALSATHREAD;
 #elif defined(HAVE_ALSA)
+/* Was MICROPHONE_ALSATHREAD when built with threads. That driver is
+ * gone: the frontend's threaded capture, on by default, does what its
+ * worker did - and for every microphone driver that can wait on its
+ * device, not just this one. */
 static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_ALSA;
 #elif defined(HAVE_PIPEWIRE)
 static const enum microphone_driver_enum MICROPHONE_DEFAULT_DRIVER = MICROPHONE_PIPEWIRE;
@@ -688,7 +688,7 @@ static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_UDEV;
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_LINUXRAW;
 #elif defined(HAVE_WAYLAND)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_WAYLAND;
-#elif defined(HAVE_COCOA) || defined(HAVE_COCOATOUCH) || defined(HAVE_COCOA_METAL)
+#elif defined(HAVE_COCOA) || defined(HAVE_COCOATOUCH)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_COCOA;
 #elif defined(__QNX__)
 static const enum input_driver_enum INPUT_DEFAULT_DRIVER = INPUT_QNX;
@@ -798,7 +798,7 @@ static const enum location_driver_enum LOCATION_DEFAULT_DRIVER = LOCATION_NULL;
 
 #if (defined(_3DS) || defined(DINGUX)) && defined(HAVE_RGUI)
 static const enum menu_driver_enum MENU_DEFAULT_DRIVER = MENU_RGUI;
-#elif defined(IOS) && !TARGET_OS_TV
+#elif TARGET_OS_IPHONE && !TARGET_OS_TV
 #define MENU_DEFAULT_DRIVER (ios_running_on_ipad() ? MENU_OZONE : MENU_MATERIALUI)
 #elif defined(HAVE_MATERIALUI) && defined(RARCH_MOBILE)
 static const enum menu_driver_enum MENU_DEFAULT_DRIVER = MENU_MATERIALUI;
@@ -954,16 +954,12 @@ const char *config_get_default_audio(void)
          return "oss";
       case AUDIO_ALSA:
          return "alsa";
-      case AUDIO_ALSATHREAD:
-         return "alsathread";
       case AUDIO_TINYALSA:
          return "tinyalsa";
       case AUDIO_ROAR:
          return "roar";
       case AUDIO_COREAUDIO:
          return "coreaudio";
-      case AUDIO_COREAUDIO3:
-         return "coreaudio3";
       case AUDIO_AL:
          return "openal";
       case AUDIO_SL:
@@ -1008,7 +1004,10 @@ const char *config_get_default_audio(void)
          return "dsp";
       case AUDIO_SWITCH:
 #if defined(HAVE_LIBNX)
-         return "switch_audren_thread";
+         /* Was "switch_audren_thread". That driver is gone and this one
+          * reaches the same decoupling through the threaded pipeline,
+          * which also takes the resampler off the frame. */
+         return "switch_audren";
 #else
          return "switch";
 #endif
@@ -1041,8 +1040,6 @@ const char *config_get_default_microphone(void)
    {
       case MICROPHONE_ALSA:
          return "alsa";
-      case MICROPHONE_ALSATHREAD:
-         return "alsathread";
       case MICROPHONE_PIPEWIRE:
          return "pipewire";
       case MICROPHONE_WASAPI:
@@ -2044,6 +2041,7 @@ static struct config_bool_setting *populate_settings_bool(
 #endif
 #include "settings/settings_def_menu_entry_display.h"
 #include "settings/settings_def_crt_switchres.h"
+#include "settings/settings_def_video_sdl_display_server.h"
 #include "settings/settings_def_audio_state.h"
 #include "settings/settings_def_analog_deadzone.h"
 #include "settings/settings_def_desktop_menu.h"
@@ -2756,6 +2754,7 @@ static struct config_float_setting *populate_settings_float(
 #endif
 #include "settings/settings_def_menu_entry_display.h"
 #include "settings/settings_def_crt_switchres.h"
+#include "settings/settings_def_video_sdl_display_server.h"
 #include "settings/settings_def_audio_state.h"
 #include "settings/settings_def_analog_deadzone.h"
 #include "settings/settings_def_desktop_menu.h"
@@ -3420,6 +3419,7 @@ static struct config_uint_setting *populate_settings_uint(
 #endif
 #include "settings/settings_def_menu_entry_display.h"
 #include "settings/settings_def_crt_switchres.h"
+#include "settings/settings_def_video_sdl_display_server.h"
 #include "settings/settings_def_audio_state.h"
 #include "settings/settings_def_analog_deadzone.h"
 #include "settings/settings_def_desktop_menu.h"
@@ -4132,6 +4132,7 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #include "settings/settings_def_menu_entry_display.h"
 #include "settings/settings_def_crt_switchres.h"
+#include "settings/settings_def_video_sdl_display_server.h"
 #include "settings/settings_def_audio_state.h"
 #include "settings/settings_def_analog_deadzone.h"
 #include "settings/settings_def_desktop_menu.h"
@@ -4725,6 +4726,7 @@ static struct config_int_setting *populate_settings_int(
 #endif
 #include "settings/settings_def_menu_entry_display.h"
 #include "settings/settings_def_crt_switchres.h"
+#include "settings/settings_def_video_sdl_display_server.h"
 #include "settings/settings_def_audio_state.h"
 #include "settings/settings_def_analog_deadzone.h"
 #include "settings/settings_def_desktop_menu.h"
@@ -6097,7 +6099,7 @@ static config_file_t *open_default_config_file(void)
 
       RARCH_LOG("[Config] Created new config file in: \"%s\".\n", conf_path);
    }
-#elif defined(OSX)
+#elif TARGET_OS_OSX
    if (!fill_pathname_application_data(application_data,
             sizeof(application_data)))
    {
@@ -6480,6 +6482,25 @@ static bool config_load_file(global_t *global,
          *bool_settings[i].ptr = tmp;
    }
 
+   /* audio_threaded_pipeline briefly held off/automatic/on rather than
+    * a plain bool, and wrote that as a number. A bool is always saved
+    * as "true" or "false", so a numeric value here is that older
+    * three-way one: automatic (1) means the pipeline was never asked
+    * for and reads as the default, on (2) means it was. The value is
+    * rewritten in the settings, so the next save records it as a
+    * bool and this stops applying. */
+   {
+      const struct config_entry_list *entry =
+            (const struct config_entry_list*)config_get_entry(conf,
+                  "audio_threaded_pipeline");
+
+      if (entry && entry->value[0] >= '0' && entry->value[0] <= '9'
+            && entry->value[1] == '\0')
+         configuration_set_bool(settings,
+               settings->bools.audio_threaded_pipeline,
+               (entry->value[0] == '2'));
+   }
+
 #ifdef HAVE_NETWORKGAMEPAD
    {
       char tmp[64];
@@ -6608,7 +6629,7 @@ static bool config_load_file(global_t *global,
          strlcpy(path_settings[i].ptr, tmp_str, PATH_MAX_LENGTH);
    }
 
-#if !IOS
+#if !TARGET_OS_IPHONE
    if (config_get_path(conf, "libretro_directory", tmp_str, sizeof(tmp_str)))
       configuration_set_string(settings,
             settings->paths.directory_libretro, tmp_str);
@@ -6812,7 +6833,7 @@ static bool config_load_file(global_t *global,
       }
    }
 
-#if defined(__APPLE__) && defined(OSX)
+#if defined(__APPLE__) && TARGET_OS_OSX
    if (     ((frontend_driver_get_cpu_architecture() == FRONTEND_ARCH_X86_64) &&
             string_ends_with(settings->paths.network_buildbot_url, "/arm64/latest/"))
          || ((frontend_driver_get_cpu_architecture() == FRONTEND_ARCH_ARMV8) &&
@@ -9349,7 +9370,7 @@ int8_t config_save_overrides(enum override_type type,
 
          if (!string_is_equal(base, cur))
          {
-#if IOS
+#if TARGET_OS_IPHONE
             if (string_is_equal(path_settings[i].ident, "libretro_directory"))
                continue;
 #endif

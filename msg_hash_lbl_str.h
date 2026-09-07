@@ -28,7 +28,6 @@
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_TINYALSA_STR "tinyalsa"
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_ROAR_STR "roar"
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_COREAUDIO_STR "coreaudio"
-#define MENU_ENUM_LABEL_AUDIO_DRIVER_COREAUDIO3_STR "coreaudio3"
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_AL_STR "openal"
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_SL_STR "opensl"
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_SDL_STR "sdl"
@@ -53,7 +52,7 @@
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_PS2_STR "ps2"
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_CTR_STR "dsp"
 #if defined(HAVE_LIBNX)
-#define MENU_ENUM_LABEL_AUDIO_DRIVER_SWITCH_STR "switch_audren_thread"
+#define MENU_ENUM_LABEL_AUDIO_DRIVER_SWITCH_STR "switch_audren"
 #else
 #define MENU_ENUM_LABEL_AUDIO_DRIVER_SWITCH_STR "switch"
 #endif
@@ -948,6 +947,7 @@
 #define MENU_ENUM_LABEL_ANDROID_INPUT_DISCONNECT_WORKAROUND_STR "android_input_disconnect_workaround"
 #define MENU_ENUM_LABEL_ASSETS_DIRECTORY_STR "assets_directory"
 #define MENU_ENUM_LABEL_AUDIO_ASIO_CONTROL_PANEL_STR "audio_asio_control_panel"
+#define MENU_ENUM_LABEL_AUDIO_ASIO_OUTPUT_CHANNEL_STR "audio_asio_output_channel"
 #define MENU_ENUM_LABEL_AUDIO_BLOCK_FRAMES_STR "audio_block_frames"
 #define MENU_ENUM_LABEL_AUDIO_DEVICE_STR "audio_device"
 #define MENU_ENUM_LABEL_AUDIO_DSP_PLUGIN_STR "audio_dsp_plugin"
@@ -967,6 +967,7 @@
 #define MENU_ENUM_LABEL_AUDIO_RESPECT_SILENT_MODE_STR "audio_respect_silent_mode"
 #define MENU_ENUM_LABEL_AUDIO_REWIND_MUTE_STR "audio_rewind_mute"
 #define MENU_ENUM_LABEL_AUDIO_SETTINGS_STR "audio_settings"
+#define MENU_ENUM_LABEL_AUDIO_SINK_RATE_ESTIMATION_STR "audio_sink_rate_estimation"
 #define MENU_ENUM_LABEL_AUDIO_SYNC_STR "audio_sync"
 #define MENU_ENUM_LABEL_AUDIO_SYNCHRONIZATION_SETTINGS_STR "audio_synchronization_settings"
 #define MENU_ENUM_LABEL_AUDIO_THREADED_PIPELINE_STR "audio_threaded_pipeline"
@@ -1589,6 +1590,7 @@
 #define MENU_ENUM_LABEL_VIDEO_FORCE_SRGB_DISABLE_STR "video_force_srgb_disable"
 #define MENU_ENUM_LABEL_VIDEO_FRAME_DELAY_STR "video_frame_delay"
 #define MENU_ENUM_LABEL_VIDEO_FRAME_DELAY_AUTO_STR "video_frame_delay_auto"
+#define MENU_ENUM_LABEL_VIDEO_FSE_NEGOTIATION_STR "video_fse_negotiation"
 #define MENU_ENUM_LABEL_VIDEO_FULLSCREEN_STR "video_fullscreen"
 #define MENU_ENUM_LABEL_VIDEO_FULLSCREEN_MODE_SETTINGS_STR "video_fullscreen_mode_settings"
 #define MENU_ENUM_LABEL_VIDEO_FULLSCREEN_X_STR "video_fullscreen_x"

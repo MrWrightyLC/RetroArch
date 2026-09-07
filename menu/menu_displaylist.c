@@ -75,7 +75,7 @@
 #include "../play_feature_delivery/play_feature_delivery.h"
 #endif
 
-#ifdef IOS
+#if TARGET_OS_IPHONE
 #include "JITSupport.h"
 #endif
 
@@ -88,6 +88,9 @@
 #include "../midi_driver.h"
 #include "../record/record_driver.h"
 #include "../msg_hash_lbl_str.h"
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 #include "menu_cbs.h"
 #include "menu_driver.h"
 #include "menu_dirwalk.h"
@@ -286,7 +289,7 @@ static int filebrowser_parse(
    bool path_is_compressed                      = path && *path
          && path_is_compressed_file(path);
    menu_search_terms_t *search_terms            = menu_entries_search_get_terms();
-#ifdef IOS
+#if TARGET_OS_IPHONE
    char full_path[PATH_MAX_LENGTH];
    fill_pathname_expand_special(full_path, path, sizeof(full_path));
 #else
@@ -334,7 +337,7 @@ static int filebrowser_parse(
          filter_ext = false;
 
       if (   !strcmp(label, "database_manager_list")
-#ifdef IOS
+#if TARGET_OS_IPHONE
             || !strcmp(label, "video_filter")
             || !strcmp(label, "audio_dsp_plugin")
 #endif
@@ -597,7 +600,7 @@ static int filebrowser_parse(
             MENU_ENUM_LABEL_NO_ITEMS,
             MENU_SETTING_NO_ITEM, 0, 0, NULL);
 
-#if defined(IOS) || (defined(OSX) && defined(HAVE_APPLE_STORE))
+#if TARGET_OS_IPHONE || (TARGET_OS_OSX && defined(HAVE_APPLE_STORE))
    {
       struct string_list *sandbox_list = string_list_new();
       dir_list_append(sandbox_list, "/private/var", NULL, true, false, false, false);
@@ -677,7 +680,7 @@ static int menu_displaylist_parse_core_info(
       settings_t *settings)
 {
    char tmp[NAME_MAX_LENGTH];
-#if IOS
+#if TARGET_OS_IPHONE
    char shortened_path[NAME_MAX_LENGTH] = {0};
 #endif
    unsigned i, count             = 0;
@@ -927,7 +930,7 @@ static int menu_displaylist_parse_core_info(
 
       _len += strlcpy_lit(tmp + _len, ": ", sizeof(tmp) - _len);
 
-#if IOS
+#if TARGET_OS_IPHONE
       shortened_path[0] = '\0';
       fill_pathname_abbreviate_special(shortened_path,
             core_path, sizeof(shortened_path));
@@ -1004,7 +1007,7 @@ static int menu_displaylist_parse_core_info(
          /* Show the path that was checked */
          {
             int _snprintf_ret;
-#ifdef IOS
+#if TARGET_OS_IPHONE
             shortened_path[0] = '\0';
             fill_pathname_abbreviate_special(shortened_path,
                   firmware_info.directory.system,
@@ -1166,7 +1169,7 @@ end:
       }
 #endif
 
-#if !defined(IOS) || !IOS /* should this be allowed on jailbroken iOS devices? */
+#if !TARGET_OS_IPHONE /* should this be allowed on jailbroken iOS devices? */
       if (core_path && *core_path)
       {
          /* Check whether core is currently locked */
@@ -1433,7 +1436,7 @@ static unsigned menu_displaylist_parse_core_manager_list(file_list_t *list,
       }
    }
 
-#ifndef IOS
+#if !TARGET_OS_IPHONE
    /* Add 'sideload core' entry */
    if (!kiosk_mode_enable)
       if (menu_entries_append(list,
@@ -2188,7 +2191,7 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
          count++;
    }
 
-#ifdef IOS
+#if TARGET_OS_IPHONE
    {
       const char *val_yes_str = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_YES);
       const char *val_no_str  = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NO);
@@ -2617,9 +2620,6 @@ static unsigned menu_displaylist_parse_system_info(file_list_t *list)
 #endif
 #ifdef HAVE_COREAUDIO
          {SUPPORTS_COREAUDIO, "CoreAudio"},
-#endif
-#ifdef HAVE_COREAUDIO3
-         {SUPPORTS_COREAUDIO3, "CoreAudio V3"},
 #endif
 #ifdef HAVE_JACK
          {SUPPORTS_JACK, "JACK"},
@@ -4841,7 +4841,7 @@ static unsigned menu_displaylist_parse_cores(menu_handle_t *menu,
       }
 #endif
 
-#ifdef IOS
+#if TARGET_OS_IPHONE
       /* For various reasons on iOS/tvOS, MoltenVK shows up
        * in the cores directory; exclude it here */
       if (string_starts_with(path, "MoltenVK"))
@@ -5681,6 +5681,9 @@ static int menu_displaylist_parse_audio_device_list(file_list_t *info_list,
    if (!setting)
       return 0;
 
+   /* Enumerate now rather than showing whatever init cached: devices
+    * come and go, and the cached list is empty when init failed. */
+   audio_driver_refresh_devices_list();
    if (!audio_driver_get_devices_list((void**)&ptr))
       return 0;
 
@@ -5826,6 +5829,9 @@ static int menu_displaylist_parse_microphone_device_list(
    if (!setting)
       return 0;
 
+   /* Rebuilt on each open, from the configured driver, as the audio
+    * device list is. */
+   microphone_driver_refresh_devices_list();
    if (!microphone_driver_get_devices_list((void**)&ptr))
       return 0;
 
@@ -6732,7 +6738,7 @@ bool menu_displaylist_process(menu_displaylist_info_t *info)
                MENU_ENUM_LABEL_CORE_UPDATER_LIST,
                MENU_SETTING_ACTION, 0, 0, NULL);
 #endif
-#ifndef IOS
+#if !TARGET_OS_IPHONE
          menu_entries_append(info_list,
                msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SIDELOAD_CORE_LIST),
                MENU_ENUM_LABEL_SIDELOAD_CORE_LIST_STR,
@@ -8538,9 +8544,18 @@ unsigned menu_displaylist_build_list(
             }
 #endif
 #ifdef HAVE_ASIO
-            if (  string_is_equal(settings->arrays.audio_driver, "asio")
-               && !string_is_empty(settings->arrays.audio_device))
+            /* Shown for the configured driver, as the WASAPI items are:
+             * the page rebuilds on a driver change without audio being
+             * reinitialised, so this is what tells the user ASIO is the
+             * driver they picked. The panel itself needs ASIO running,
+             * and says so if it is not. A device does not gate it - the
+             * driver opens its default device when none is set. */
+            if (string_is_equal(settings->arrays.audio_driver, "asio"))
             {
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                        MENU_ENUM_LABEL_AUDIO_ASIO_OUTPUT_CHANNEL,
+                        PARSE_ONLY_UINT, false) == 0)
+                  count++;
                if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                         MENU_ENUM_LABEL_AUDIO_ASIO_CONTROL_PANEL,
                         PARSE_ACTION, false) == 0)
@@ -8575,6 +8590,11 @@ unsigned menu_displaylist_build_list(
                   PARSE_ONLY_UINT, false) == 0)
             count++;
 #ifdef HAVE_WASAPI
+         /* Shown for the configured driver, as the audio output page
+          * shows its WASAPI items: the rows are always in the settings
+          * table now, and this is what keeps them off the page for
+          * every other microphone driver. */
+         if (string_is_equal(settings->arrays.microphone_driver, "wasapi"))
          {
             static const menu_displaylist_settings_row_t dl_rows_5[] = {
                { MENU_ENUM_LABEL_MICROPHONE_WASAPI_EXCLUSIVE_MODE, PARSE_ONLY_BOOL, false },
@@ -8595,6 +8615,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_AUDIO_THREAD_PRIORITY,           PARSE_ONLY_BOOL,     true  },
                {MENU_ENUM_LABEL_AUDIO_MAX_TIMING_SKEW,           PARSE_ONLY_FLOAT,    true  },
                {MENU_ENUM_LABEL_AUDIO_RATE_CONTROL_DELTA,        PARSE_ONLY_FLOAT,    true  },
+               {MENU_ENUM_LABEL_AUDIO_SINK_RATE_ESTIMATION,      PARSE_ONLY_BOOL,     true  },
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
@@ -8677,7 +8698,7 @@ unsigned menu_displaylist_build_list(
 
             if (video_display_server_get_flags(&flags))
             {
-               if (BIT32_GET(flags.flags, DISPSERV_CTX_CRT_SWITCHRES))
+               if (BIT32_GET(flags.flags, DISPSERV_CTX_MODELINE))
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                            MENU_ENUM_LABEL_CRT_SWITCHRES_SETTINGS,
                            PARSE_ACTION, false) == 0)
@@ -8691,6 +8712,13 @@ unsigned menu_displaylist_build_list(
                            PARSE_ACTION, false) == 0)
                      count++;
             }
+
+            /* Only an SDL window can hand mode switching to SDL */
+            if (video_display_server_sdl_available())
+               if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
+                        MENU_ENUM_LABEL_VIDEO_SDL_DISPLAY_SERVER,
+                        PARSE_ONLY_UINT, false) == 0)
+                  count++;
 
             {
                static const menu_displaylist_settings_row_t dl_rows_7[] = {
@@ -10467,7 +10495,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_SCREENSAVER_TIMEOUT,                              PARSE_ONLY_UINT,   false},
                {MENU_ENUM_LABEL_MENU_SCREENSAVER_ANIMATION,                            PARSE_ONLY_UINT,   false},
                {MENU_ENUM_LABEL_MENU_SCREENSAVER_ANIMATION_SPEED,                      PARSE_ONLY_FLOAT,  false},
-#if !defined(OSX)
+#if !TARGET_OS_OSX
                {MENU_ENUM_LABEL_VIDEO_DISABLE_COMPOSITION,                             PARSE_ONLY_BOOL,   true},
 #endif
 #if defined(HAVE_QT) || defined(HAVE_COCOA)
@@ -10564,7 +10592,7 @@ unsigned menu_displaylist_build_list(
       case DISPLAYLIST_VIDEO_WINDOWED_MODE_SETTINGS_LIST:
          {
 #if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||  \
-    (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)) ||     \
+    (defined(HAVE_COCOA) && !defined(HAVE_COCOATOUCH)) ||     \
     defined(HAVE_SDL3)
             bool window_custom_size_enable = settings->bools.video_window_save_positions;
 #else
@@ -10572,7 +10600,7 @@ unsigned menu_displaylist_build_list(
 #endif
             static menu_displaylist_build_info_selective_t build_list[] = {
 #if (defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__)) ||  \
-    (defined(HAVE_COCOA_METAL) && !defined(HAVE_COCOATOUCH)) ||     \
+    (defined(HAVE_COCOA) && !defined(HAVE_COCOATOUCH)) ||     \
     defined(HAVE_SDL3)
                {MENU_ENUM_LABEL_VIDEO_WINDOW_SAVE_POSITION,      PARSE_ONLY_BOOL,  true },
 #else
@@ -10625,6 +10653,7 @@ unsigned menu_displaylist_build_list(
             static menu_displaylist_build_info_selective_t build_list[] = {
                {MENU_ENUM_LABEL_VIDEO_FULLSCREEN,                  PARSE_ONLY_BOOL,     true  },
                {MENU_ENUM_LABEL_VIDEO_WINDOWED_FULLSCREEN,         PARSE_ONLY_BOOL,     true  },
+               {MENU_ENUM_LABEL_VIDEO_FSE_NEGOTIATION,             PARSE_ONLY_UINT,     true  },
                {MENU_ENUM_LABEL_VIDEO_FULLSCREEN_X,                PARSE_ONLY_UINT,     true  },
                {MENU_ENUM_LABEL_VIDEO_FULLSCREEN_Y,                PARSE_ONLY_UINT,     true  },
 #ifdef __WINRT__
@@ -10985,6 +11014,9 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_CRT_SWITCH_PORCH_ADJUST,                               PARSE_ONLY_INT },
                {MENU_ENUM_LABEL_CRT_SWITCH_X_AXIS_CENTERING,                           PARSE_ONLY_INT },
                {MENU_ENUM_LABEL_CRT_SWITCH_VERTICAL_ADJUST,                            PARSE_ONLY_INT },
+#ifdef HAVE_MODELINE
+               {MENU_ENUM_LABEL_CRT_SWITCH_WRITE_EDID,                                 PARSE_ACTION   },
+#endif
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
@@ -11079,7 +11111,7 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_SHOW_CONFIGURATIONS,                              PARSE_ONLY_BOOL, true  },
                {MENU_ENUM_LABEL_MENU_SHOW_HELP,                                        PARSE_ONLY_BOOL, true  },
                {MENU_ENUM_LABEL_SHOW_WIMP,                                             PARSE_ONLY_UINT, true  },
-#if !defined(IOS)
+#if !TARGET_OS_IPHONE
                {MENU_ENUM_LABEL_MENU_SHOW_QUIT_RETROARCH,                              PARSE_ONLY_BOOL, true  },
                {MENU_ENUM_LABEL_MENU_SHOW_RESTART_RETROARCH,                           PARSE_ONLY_BOOL, true  },
 #endif
@@ -16129,7 +16161,7 @@ static bool menu_displaylist_ctl_internal(
                      PARSE_ACTION, false) == 0)
                   count++;
 
-#if !defined(IOS)
+#if !TARGET_OS_IPHONE
                if (settings->bools.menu_show_restart_retroarch)
                   if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
                         info->list,

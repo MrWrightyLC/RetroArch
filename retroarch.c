@@ -88,6 +88,9 @@
 #include <file/file_path.h>
 #include <retro_miscellaneous.h>
 #include <lists/dir_list.h>
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -677,10 +680,16 @@ bool midi_driver_set_all_sounds_off(void)
     * MIDI is not used. Frame Delay also breaks if MIDI sounds
     * are "set off", which happens on menu toggle, therefore
     * skip this if WASAPI is used and Frame Delay is active.. */
-   if (memcmp(audio_state_get_ptr()->current_audio->ident, "wasapi", 6) == 0)
    {
-      if (video_state_get_ptr()->frame_delay_target > 0 || config_get_ptr()->bools.video_scanline_sync)
-         return false;
+      /* audio_driver_get_ident(), not current_audio->ident: with the
+       * threaded pipeline the latter is "audio-thread" and this check
+       * silently stopped applying. */
+      const char *ident = audio_driver_get_ident();
+      if (ident && memcmp(ident, "wasapi", 6) == 0)
+      {
+         if (video_state_get_ptr()->frame_delay_target > 0 || config_get_ptr()->bools.video_scanline_sync)
+            return false;
+      }
    }
 #endif
 
@@ -1676,20 +1685,18 @@ void drivers_init(
       audio_driver_init_internal(
             settings,
             audio_st->callback.callback != NULL);
-      if (     audio_st->current_audio
-            && audio_st->current_audio->device_list_new
-            && audio_st->context_audio_data)
-         audio_st->devices_list = (struct string_list*)
-            audio_st->current_audio->device_list_new(
-                  audio_st->context_audio_data);
+      /* Whether or not init succeeded: the list is how the user gets
+       * out of a failed device choice. */
+      audio_driver_refresh_devices_list();
    }
 
 #ifdef HAVE_MICROPHONE
    if (flags & DRIVER_MICROPHONE_MASK)
    {
       microphone_driver_init_internal(settings);
-      if (mic_st->driver && mic_st->driver->device_list_new && mic_st->driver_context)
-         mic_st->devices_list = mic_st->driver->device_list_new(mic_st->driver_context);
+      /* Whether or not init succeeded, as for audio: the list is how
+       * the user gets out of a failed device choice. */
+      microphone_driver_refresh_devices_list();
    }
 #endif
 
@@ -1878,7 +1885,7 @@ void driver_uninit(int flags, enum driver_lifetime_flags lifetime_flags)
     * No-op when threaded video is not active. */
    if (     (flags & DRIVER_VIDEO_AND_INPUT_MASK)
          && VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-         && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+         && video_st->thread_wrapper_active)
       video_thread_wait_idle();
 #endif
 
@@ -2018,7 +2025,7 @@ static void retroarch_deinit_drivers(struct retro_callbacks *cbs)
    }
 #endif
 
-#if defined(HAVE_CRTSWITCHRES)
+#if defined(HAVE_MODELINE)
    /* Switchres deinit */
    if (video_st->flags & VIDEO_FLAG_CRT_SWITCHING_ACTIVE)
       crt_destroy_modes(&video_st->crt_switch_st);
@@ -4191,7 +4198,7 @@ bool command_event(enum event_command cmd, void *data)
                /* Same barrier as driver_uninit(): never free widget GPU
                 * resources while the video thread may still reference them. */
                if (     VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-                     && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+                     && video_st->thread_wrapper_active)
                   video_thread_wait_idle();
 #endif
                /* Full teardown (not persisting): a real user toggle-off
@@ -6330,7 +6337,21 @@ void main_exit(void *args)
    video_driver_restore_cached(settings);
 
 #if defined(HAVE_GFX_WIDGETS)
-   /* Do not want display widgets to live any more. */
+   /* Do not want display widgets to live any more.
+    *
+    * The widget flags are read by gfx_widgets_frame(), which runs on
+    * the video thread under threaded video, so the thread is brought
+    * to a stop first - clearing the bit under it is a write racing
+    * those reads, which ThreadSanitizer catches on the exit path about
+    * one run in three. No-op when the wrapper is not active. */
+#ifdef HAVE_THREADS
+   {
+      video_driver_state_t *video_st_exit = video_state_get_ptr();
+      if (     VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st_exit)
+            && video_st_exit->thread_wrapper_active)
+         video_thread_wait_idle();
+   }
+#endif
    dispwidget_get_ptr()->flags &= ~DISPGFX_WIDGET_FLAG_PERSISTING;
 #endif
 #ifdef HAVE_MENU
@@ -6979,9 +7000,6 @@ static void retroarch_print_features(void)
 #ifdef HAVE_COREAUDIO
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_COREAUDIO,       "CoreAudio",       "Audio driver");
 #endif
-#ifdef HAVE_COREAUDIO3
-   _len += _PSUPP_BUF(buf, _len, SUPPORTS_COREAUDIO3,      "CoreAudioV3",     "Audio driver");
-#endif
 #ifdef HAVE_JACK
    _len += _PSUPP_BUF(buf, _len, SUPPORTS_JACK,            "JACK",            "Audio driver");
 #endif
@@ -7386,7 +7404,7 @@ static void retroarch_parse_input_libretro_path(
    /* Check if path is a directory */
    if (
        ((path_stats & RETRO_VFS_STAT_IS_DIRECTORY) != 0)
-#if defined(IOS) || defined(OSX)
+#if TARGET_OS_IPHONE || TARGET_OS_OSX
        && !string_ends_with(path, ".framework")
 #endif
        )
@@ -8724,7 +8742,7 @@ bool retroarch_main_init(int argc, char *argv[])
           * No-op when threaded video is not active. */
          video_driver_state_t *video_st = video_state_get_ptr();
          if (     VIDEO_DRIVER_IS_THREADED_INTERNAL(video_st)
-               && (video_st->flags & VIDEO_FLAG_THREAD_WRAPPER_ACTIVE))
+               && video_st->thread_wrapper_active)
             video_thread_wait_idle();
 #endif
          menu_st->flags        &= ~MENU_ST_FLAG_DATA_OWN;

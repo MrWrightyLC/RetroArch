@@ -38,6 +38,9 @@
 #endif
 
 #include "msg_hash.h"
+#ifdef __MACH__
+#include <TargetConditionals.h>
+#endif
 
 #define configuration_set_float(settings, var, newvar) \
 { \
@@ -78,6 +81,13 @@ enum crt_switch_type
    CRT_SWITCH_31KHZ,
    CRT_SWITCH_32_120,
    CRT_SWITCH_INI
+};
+
+enum video_sdl_display_server_mode
+{
+   VIDEO_SDL_DISPLAY_SERVER_OFF = 0,
+   VIDEO_SDL_DISPLAY_SERVER_AUTO,
+   VIDEO_SDL_DISPLAY_SERVER_ALWAYS
 };
 
 enum override_type
@@ -157,6 +167,7 @@ typedef struct settings
 
 #ifdef HAVE_WASAPI
       unsigned audio_wasapi_sh_buffer_length;
+      unsigned audio_asio_output_channel;
 #endif
 
 #ifdef HAVE_MICROPHONE
@@ -225,6 +236,7 @@ typedef struct settings
       unsigned video_window_opacity;
       unsigned crt_switch_resolution;
       unsigned crt_switch_resolution_super;
+      unsigned video_sdl_display_server;
       unsigned screen_brightness;
       unsigned video_monitor_index;
       unsigned video_fullscreen_x;
@@ -239,6 +251,7 @@ typedef struct settings
       unsigned video_viwidth;
       unsigned video_aspect_ratio_idx;
       unsigned video_rotation;
+      unsigned video_fse_negotiation;
       unsigned screen_orientation;
       unsigned video_msg_bgcolor_red;
       unsigned video_msg_bgcolor_green;
@@ -597,6 +610,7 @@ typedef struct settings
       bool audio_enable_menu_bgm;
       bool audio_enable_menu_scroll;
       bool audio_sync;
+      bool audio_sink_rate_estimation;
       bool audio_threaded_pipeline;
       bool audio_thread_priority;
       bool audio_rate_control;
@@ -604,7 +618,7 @@ typedef struct settings
       bool audio_fastforward_speedup;
       bool audio_fastpath_s16;
       bool audio_rewind_mute;
-#ifdef IOS
+#if TARGET_OS_IPHONE
       bool audio_respect_silent_mode;
 #endif
 

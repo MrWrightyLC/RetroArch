@@ -753,6 +753,13 @@ struct CommonResources
 
    VkSampler samplers[GLSLANG_FILTER_CHAIN_COUNT][GLSLANG_FILTER_CHAIN_COUNT][GLSLANG_FILTER_CHAIN_ADDRESS_COUNT];
 
+   /* Descriptor write batch shared by every pass of the chain. Passes
+    * build their semantics one after another on the thread recording
+    * the frame, so one pair of scratch arrays serves all of them and
+    * keeps 5.6 KiB off that thread's stack. */
+   VkWriteDescriptorSet  batch_writes[VULKAN_MAX_DESCRIPTOR_WRITES];
+   VkDescriptorImageInfo batch_image_infos[VULKAN_MAX_DESCRIPTOR_WRITES];
+
    Texture *original_history;
    size_t num_original_history;
    Texture *fb_feedback;
@@ -1180,7 +1187,7 @@ static bool vulkan_filter_chain_load_lut(
    struct texture_image image;
    VkBufferImageCopy region;
    VkImageCreateInfo image_info;
-   struct slang_buffer buffer          = {};
+   struct slang_buffer buffer          = { 0 };
    VkMemoryRequirements mem_reqs;
    VkImageViewCreateInfo view_info;
    VkMemoryAllocateInfo alloc;
@@ -1822,14 +1829,13 @@ static void slang_chain_build_viewport_pass(struct vulkan_filter_chain *chain,
 {
    unsigned i;
    Texture source;
-
+   Texture original;
    struct deferred_disposes *disposer = &chain->deferred_calls[chain->current_sync_index];
-   const Texture original = {
-      chain->input_texture,
-      chain->passes[0]->pass_info.source_filter,
-      chain->passes[0]->pass_info.mip_filter,
-      chain->passes[0]->pass_info.address,
-   };
+
+   original.texture    = chain->input_texture;
+   original.filter     = chain->passes[0]->pass_info.source_filter;
+   original.mip_filter = chain->passes[0]->pass_info.mip_filter;
+   original.address    = chain->passes[0]->pass_info.address;
 
    if (chain->pass_count == 1)
    {
@@ -2155,13 +2161,11 @@ static bool slang_chain_init(struct vulkan_filter_chain *chain)
 
    for (i = 0; i < chain->pass_count; i++)
    {
-#ifdef VULKAN_DEBUG
       const char *name = slang_pass_get_name(chain->passes[i]);
-      RARCH_LOG("[Vulkan] Building pass #%u (%s)\n", i,
+      RARCH_DBG("[Vulkan] Building pass #%u (%s).\n", i,
             (name && *name)
-            ? name 
+            ? name
             : msg_hash_to_str(MENU_ENUM_LABEL_VALUE_NOT_AVAILABLE));
-#endif
       slang_pass_set_pass_info(chain->passes[i],
             chain->max_input_size_width, chain->max_input_size_height,
             source_w, source_h, chain->swapchain_info, chain->pass_info[i],
@@ -2173,10 +2177,13 @@ static bool slang_chain_init(struct vulkan_filter_chain *chain)
    chain->require_clear = false;
    if (!slang_chain_init_ubo(chain))
       return false;
+   RARCH_DBG("[Vulkan] Chain UBO ready.\n");
    if (!slang_chain_init_history(chain))
       return false;
+   RARCH_DBG("[Vulkan] Chain history ready.\n");
    if (!slang_chain_init_feedback(chain))
       return false;
+   RARCH_DBG("[Vulkan] Chain feedback ready.\n");
    texture_array_resize(&chain->common.pass_outputs,
          &chain->common.num_pass_outputs, chain->pass_count);
    return true;
@@ -3105,8 +3112,11 @@ static bool slang_pass_init_pipeline(struct slang_pass *pass)
    input_assembly.sType                         = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
    input_assembly.pNext                         = NULL;
    input_assembly.flags                         = 0;
+   /* Restart on: it only acts on indexed draws, of which the shader
+    * chain makes none, and Metal cannot turn it off for strips, so
+    * MoltenVK would otherwise warn once per pass on every load. */
    input_assembly.topology                      = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-   input_assembly.primitiveRestartEnable        = VK_FALSE;
+   input_assembly.primitiveRestartEnable        = VK_TRUE;
 
    /* VAO state */
    attributes[0].location                       = 0;
@@ -3452,7 +3462,7 @@ static bool slang_pass_build(struct slang_pass *pass)
 {
    unsigned i;
    unsigned j = 0;
-   slang_semantic_name_map semantic_map = {};
+   slang_semantic_name_map semantic_map = { 0 };
 
    /* The reflection below reads the semantic maps out of common
     * unconditionally, so a pass without one cannot be built at all.
@@ -3748,9 +3758,9 @@ static void slang_pass_build_semantics(struct slang_pass *pass,
 {
    unsigned i;
    /* Batch arrays for descriptor writes - flushed once at the end. */
-   VkDescriptorImageInfo batch_image_infos[VULKAN_MAX_DESCRIPTOR_WRITES];
-   VkWriteDescriptorSet  batch_writes[VULKAN_MAX_DESCRIPTOR_WRITES];
-   unsigned              batch_count = 0;
+   VkDescriptorImageInfo *batch_image_infos = pass->common->batch_image_infos;
+   VkWriteDescriptorSet  *batch_writes      = pass->common->batch_writes;
+   unsigned               batch_count       = 0;
 
    /* MVP */
    if (buffer && pass->reflection.semantics[SLANG_SEMANTIC_MVP].uniform)
@@ -3903,13 +3913,15 @@ static void slang_pass_build_commands(struct slang_pass *pass,
       const float *mvp)
 {
    uint8_t *u       = NULL;
-
+   VkRect2D sci;
+   VkViewport fb_vp;
    unsigned size_width;
-      unsigned size_height;
+   unsigned size_height;
    unsigned size_orig_width;
-      unsigned size_orig_height;
+   unsigned size_orig_height;
    unsigned size_src_width;
-      unsigned size_src_height;
+   unsigned size_src_height;
+
    pass->curr_vp          = *vp;
    size_orig_width        = original->texture.width;
    size_orig_height       = original->texture.height;
@@ -4012,74 +4024,51 @@ static void slang_pass_build_commands(struct slang_pass *pass,
 #ifdef VULKAN_ROLLING_SCANLINE_SIMULATION
       if (pass->common->simulate_scanline)
       {
-         const VkRect2D sci = {
-            {
-               (int32_t)(pass->curr_vp.x),
-               (int32_t)((pass->curr_vp.height / (float)(pass->common->total_subframes))
-                        * (float)(pass->common->current_subframe - 1))
-            },
-            {
-               (uint32_t)(pass->curr_vp.width),
-               (uint32_t)(pass->curr_vp.height / (float)(pass->common->total_subframes))
-            },
-         };
-         vkCmdSetScissor(cmd, 0, 1, &sci);
+         sci.offset.x      = (int32_t)(pass->curr_vp.x);
+         sci.offset.y      = (int32_t)((pass->curr_vp.height / (float)(pass->common->total_subframes))
+                                       * (float)(pass->common->current_subframe - 1));
+         sci.extent.width  = (uint32_t)(pass->curr_vp.width);
+         sci.extent.height = (uint32_t)(pass->curr_vp.height / (float)(pass->common->total_subframes));
       }
       else
 #endif /* VULKAN_ROLLING_SCANLINE_SIMULATION */
       {
-         const VkRect2D sci = {
-            {
-               (int32_t)(pass->curr_vp.x),
-               (int32_t)(pass->curr_vp.y)
-            },
-            {
-               (uint32_t)(pass->curr_vp.width),
-               (uint32_t)(pass->curr_vp.height)
-            },
-         };
-         vkCmdSetScissor(cmd, 0, 1, &sci);
+         sci.offset.x      = (int32_t)(pass->curr_vp.x);
+         sci.offset.y      = (int32_t)(pass->curr_vp.y);
+         sci.extent.width  = (uint32_t)(pass->curr_vp.width);
+         sci.extent.height = (uint32_t)(pass->curr_vp.height);
       }
+      vkCmdSetScissor(cmd, 0, 1, &sci);
    }
    else
    {
-      const VkViewport _vp = {
-         0.0f, 0.0f,
-         (float)(pass->current_framebuffer_size_width),
-         (float)(pass->current_framebuffer_size_height),
-         0.0f, 1.0f
-      };
+      fb_vp.x        = 0.0f;
+      fb_vp.y        = 0.0f;
+      fb_vp.width    = (float)(pass->current_framebuffer_size_width);
+      fb_vp.height   = (float)(pass->current_framebuffer_size_height);
+      fb_vp.minDepth = 0.0f;
+      fb_vp.maxDepth = 1.0f;
 
-      vkCmdSetViewport(cmd, 0, 1, &_vp);
+      vkCmdSetViewport(cmd, 0, 1, &fb_vp);
 
 #ifdef VULKAN_ROLLING_SCANLINE_SIMULATION
       if (pass->common->simulate_scanline)
       {
-         const VkRect2D sci = {
-            {
-               0,
-               (int32_t)(((float)(pass->current_framebuffer_size_height) / (float)(pass->common->total_subframes))
-                        * (float)(pass->common->current_subframe - 1))
-            },
-            {
-               (uint32_t)(pass->current_framebuffer_size_width),
-               (uint32_t)((float)(pass->current_framebuffer_size_height) / (float)(pass->common->total_subframes))
-            },
-         };
-         vkCmdSetScissor(cmd, 0, 1, &sci);
+         sci.offset.x      = 0;
+         sci.offset.y      = (int32_t)(((float)(pass->current_framebuffer_size_height) / (float)(pass->common->total_subframes))
+                                       * (float)(pass->common->current_subframe - 1));
+         sci.extent.width  = (uint32_t)(pass->current_framebuffer_size_width);
+         sci.extent.height = (uint32_t)((float)(pass->current_framebuffer_size_height) / (float)(pass->common->total_subframes));
       }
       else
 #endif /* VULKAN_ROLLING_SCANLINE_SIMULATION */
       {
-         const VkRect2D sci = {
-            { 0, 0 },
-            {
-               pass->current_framebuffer_size_width,
-               pass->current_framebuffer_size_height
-            },
-         };
-         vkCmdSetScissor(cmd, 0, 1, &sci);
+         sci.offset.x      = 0;
+         sci.offset.y      = 0;
+         sci.extent.width  = pass->current_framebuffer_size_width;
+         sci.extent.height = pass->current_framebuffer_size_height;
       }
+      vkCmdSetScissor(cmd, 0, 1, &sci);
    }
 
    vkCmdDraw(cmd, 4, 1, 0, 0);
@@ -4433,6 +4422,7 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_default(
    chain = slang_chain_new(&tmpinfo);
    if (!chain)
       return NULL;
+   RARCH_DBG("[Vulkan] Stock chain allocated.\n");
 
    pass_info.scale_type_x  = GLSLANG_FILTER_CHAIN_SCALE_VIEWPORT;
    pass_info.scale_type_y  = GLSLANG_FILTER_CHAIN_SCALE_VIEWPORT;
@@ -4471,6 +4461,7 @@ vulkan_filter_chain_t *vulkan_filter_chain_create_default(
       return NULL;
    }
 
+   RARCH_DBG("[Vulkan] Stock chain built.\n");
    return chain;
 }
 

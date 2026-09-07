@@ -118,6 +118,13 @@
  * exists so a device that stops draining cannot hang the frontend. */
 #define AUDIO_PIPE_WAIT_MAX_US         1000000
 
+/* The policy floor on the latency setting, in milliseconds, applied
+ * once here before any driver sees it. The setting's range starts at
+ * zero, and zero reached the drivers: some floored it themselves, each
+ * at its own value, one refused to open, one fell back to a fixed
+ * fifo. A driver keeps only a floor of its hardware's own. */
+#define AUDIO_LATENCY_MIN_MS           8
+
 /* Region spacing inside the two scratch arenas, in elements: 64 bytes
  * for either type. Every region starts on a 64-byte boundary for the
  * SIMD conversion and resampler paths, and one extra 64-byte pad sits
@@ -195,7 +202,6 @@ audio_driver_t *audio_drivers[] = {
 #ifdef HAVE_ALSA
    &audio_alsa,
 #if !defined(__QNX__) && !defined(MIYOO) && defined(HAVE_THREADS)
-   &audio_alsathread,
 #endif
 #endif
 #ifdef HAVE_TINYALSA
@@ -212,9 +218,6 @@ audio_driver_t *audio_drivers[] = {
 #endif
 #ifdef HAVE_COREAUDIO
    &audio_coreaudio,
-#endif
-#ifdef HAVE_COREAUDIO3
-   &audio_coreaudio3,
 #endif
 #ifdef HAVE_AL
    &audio_openal,
@@ -279,16 +282,11 @@ audio_driver_t *audio_drivers[] = {
 #ifdef _3DS
    &audio_ctr_csnd,
    &audio_ctr_dsp,
-#ifdef HAVE_THREADS
-   &audio_ctr_dsp_thread,
-#endif
 #endif
 #ifdef SWITCH
    &audio_switch,
-   &audio_switch_thread,
 #ifdef HAVE_LIBNX
    &audio_switch_libnx_audren,
-   &audio_switch_libnx_audren_thread,
 #endif
 #endif
    &audio_null,
@@ -314,7 +312,6 @@ microphone_driver_t *microphone_drivers[] = {
 #ifdef HAVE_ALSA
       &microphone_alsa,
 #if !defined(__QNX__) && !defined(MIYOO) && defined(HAVE_THREADS)
-   &microphone_alsathread,
 #endif
 #endif
 #ifdef HAVE_WASAPI
@@ -371,20 +368,95 @@ bool audio_driver_is_ai_service_speech_running(void)
 }
 #endif
 
+/* The driver whose device_list_new to call. The devices listed are the
+ * ones the Device setting will be applied to, and that is the
+ * configured driver: when it is the one running, ask it, through the
+ * wrapper if the threaded pipeline is on; when the user has picked a
+ * different driver in the menu and nothing has reinitialised yet, ask
+ * the configured driver with no context, which enumeration allows.
+ * Asking the running driver in that case listed the old driver's
+ * devices under the new driver's name until the next restart. */
+static const audio_driver_t *audio_driver_enumeration_driver(
+      audio_driver_state_t *audio_st, void **ctx)
+{
+   settings_t *settings        = config_get_ptr();
+   const audio_driver_t *audio = audio_st->current_audio;
+   const char *running_ident   = audio ? audio->ident : NULL;
+   *ctx                        = audio_st->context_audio_data;
+#ifdef HAVE_THREADS
+   if (audio && string_is_equal(audio->ident, "audio-thread"))
+   {
+      const audio_driver_t *inner =
+         audio_thread_wrapped_driver(audio_st->context_audio_data);
+      if (inner)
+         running_ident = inner->ident; /* the wrapper forwards, context intact */
+      else
+      {
+         /* Wrapper selected but never started: no inner driver to ask.
+          * Fall through to the configured one with no context. */
+         audio         = NULL;
+         running_ident = NULL;
+      }
+   }
+#endif
+   if (     audio
+         && running_ident
+         && !string_is_equal(running_ident, settings->arrays.audio_driver))
+      audio = NULL;
+   if (!audio)
+   {
+      int i = (int)driver_find_index("audio_driver",
+            settings->arrays.audio_driver);
+      if (i >= 0)
+         audio = (const audio_driver_t*)audio_drivers[i];
+      *ctx  = NULL;
+   }
+   return audio;
+}
+
 static bool audio_driver_free_devices_list(void)
 {
    audio_driver_state_t *audio_st = &audio_driver_st;
-   const audio_driver_t *audio    = audio_st->current_audio;
-   if (
-            !audio
-         || !audio->device_list_free
-         || !audio_st->context_audio_data)
+   const audio_driver_t *audio    = audio_st->devices_list_driver;
+   if (!audio_st->devices_list)
       return false;
-   audio->device_list_free(
-         audio_st->context_audio_data,
-         audio_st->devices_list);
-   audio_st->devices_list = NULL;
+   /* Released by the driver that built it. The context it was built
+    * with may be gone by now; every driver's free takes the list alone
+    * and tolerates a NULL context. */
+   if (audio && audio->device_list_free)
+      audio->device_list_free(NULL, audio_st->devices_list);
+   else
+      string_list_free(audio_st->devices_list);
+   audio_st->devices_list        = NULL;
+   audio_st->devices_list_driver = NULL;
    return true;
+}
+
+void audio_driver_refresh_devices_list(void)
+{
+   audio_driver_state_t *audio_st = &audio_driver_st;
+   void *ctx                      = NULL;
+   const audio_driver_t *audio;
+   audio_driver_free_devices_list();
+   audio = audio_driver_enumeration_driver(audio_st, &ctx);
+   if (audio && audio->device_list_new)
+   {
+      audio_st->devices_list = (struct string_list*)
+         audio->device_list_new(ctx);
+      audio_st->devices_list_driver = audio;
+#ifdef HAVE_THREADS
+      /* Built through the wrapper: the wrapped driver allocated it,
+       * and is the one to free it - the wrapper's own free needs the
+       * context to find that driver, which the free below does not
+       * carry. */
+      if (string_is_equal(audio->ident, "audio-thread"))
+      {
+         const audio_driver_t *inner = audio_thread_wrapped_driver(ctx);
+         if (inner)
+            audio_st->devices_list_driver = inner;
+      }
+#endif
+   }
 }
 
 #ifdef DEBUG
@@ -486,7 +558,10 @@ static bool audio_driver_deinit_internal(bool audio_enable)
    audio_st->pipe_cond                = NULL;
    audio_st->pipe_data_cond           = NULL;
    audio_st->pipe_lock                = NULL;
-   /* Last: everything above may have taken it. */
+   /* Last: everything above may have taken it, and audio->free() at
+    * the top of this function joined the thread that contends for it.
+    * Nothing that runs after this point may touch the mixer or the
+    * DSP filter from another thread - see audio_driver_state_lock(). */
    if (audio_st->state_lock)
       slock_free(audio_st->state_lock);
    audio_st->state_lock               = NULL;
@@ -553,7 +628,32 @@ bool audio_driver_deinit(void)
 bool audio_driver_find_driver(const char *audio_drv,
       const char *prefix, bool verbosity_enabled)
 {
-   int i = (int)driver_find_index("audio_driver", audio_drv);
+   int i;
+
+#ifdef HAVE_ALSA
+   /* "alsathread" was a second ALSA playback driver, removed once the
+    * threaded pipeline covered what it did; a config that still names it
+    * means ALSA, not the first entry in the table. Aliased for a
+    * release, then to go. The microphone driver of the same name is
+    * unaffected - it is a separate list. */
+   if (string_is_equal(audio_drv, "alsathread"))
+      audio_drv = "alsa";
+   /* The menu label and its help text stay in msg_hash: fifteen packed
+    * translation headers carry the entry with byte counts and a
+    * contiguity check, and rewriting those to delete a string nothing
+    * can now reach is a larger and riskier change than removing the
+    * driver was. The driver is not in the list, so the label is never
+    * shown and the help lookup never matches. */
+#endif
+#ifdef HAVE_COREAUDIO
+   /* "coreaudio3" was a second Apple driver, merged into "coreaudio";
+    * a config that still names it means the driver, not the first
+    * entry in the table. Aliased for a release, then to go. */
+   if (string_is_equal(audio_drv, "coreaudio3"))
+      audio_drv = "coreaudio";
+#endif
+
+   i = (int)driver_find_index("audio_driver", audio_drv);
 
    if (i >= 0)
       audio_driver_st.current_audio = (const audio_driver_t*)
@@ -645,6 +745,13 @@ static double audio_driver_compute_rate_adjust(audio_driver_state_t *audio_st)
          audio_st->free_samples_count++ & (AUDIO_BUFFER_FREE_SAMPLES_COUNT - 1);
    avail                  = (int)audio_st->current_audio->write_avail(
          audio_st->context_audio_data);
+   /* Never above the buffer: a driver that counts a stage in
+    * write_avail() it left out of buffer_size() would otherwise push
+    * the direction term past +1, and the controller with it. The
+    * contract forbids it; the clamp is for the driver that has not
+    * caught up with the contract. */
+   if (avail > (int)audio_st->buffer_size)
+      avail               = (int)audio_st->buffer_size;
    half_size              = (int)(audio_st->buffer_size / 2);
    /* half_size is the setpoint's denominator. A driver may report a zero
     * buffer size at runtime as well as at init - pulse pushes its size
@@ -677,10 +784,347 @@ static double audio_driver_compute_rate_adjust(audio_driver_state_t *audio_st)
          : audio_st->rate_control_delta;
    rate_adjust            = 1.0 + effective_delta * direction;
 
+   /* The sink estimate sees rate control's own corrections, so that a
+    * constant one migrates into the bias and the fill re-centres. */
+   audio_st->sink_adjust_sum += rate_adjust;
+   audio_st->sink_adjust_n++;
+   if (audio_st->sink_bias > 0.0)
+      rate_adjust *= audio_st->sink_bias;
+
    audio_st->free_samples_buf[write_idx] = avail;
    audio_st->cached_rate_adjust          = rate_adjust;
    audio_st->samples_since_drc           = 0;
    return rate_adjust;
+}
+
+/* Limits on the sink bias: a crystal is off by tens of parts per
+ * million, a bad one by a few hundred; two tenths of a percent - three
+ * and a half cents - covers any, and is inaudible. The baseline is long
+ * because a driver counts what the device took in whole periods - 480
+ * frames on a shared WASAPI engine - and a count that steps by 480
+ * frames is only known to 480 frames: over four seconds that is 2500
+ * parts per million of noise, over thirty it is 330, over five minutes
+ * 33. The bias is set from the baseline every thirty seconds, so the
+ * first correction has that much behind it and each later one more.
+ * The plausibility check runs every four seconds regardless. */
+#define AUDIO_SINK_BIAS_MAX         0.002
+/* Past this, the measurement is wrong rather than the crystal.
+ *
+ * Audio crystals are specified in tens of parts per million and the
+ * worst are around a hundred; the devices measured for this feature
+ * came in at eleven. Five hundred is five times the worst plausible
+ * part, so a ratio outside it is not a clock to correct - it is two
+ * counts that are not measuring the same thing, and applying it is
+ * strictly harmful. At the 2000 ppm clamp a 64 ms buffer empties in
+ * thirty-two seconds, so the first application lands about a minute
+ * in and the audio starts to break up: the exact shape of the bug
+ * this check exists to stop, seen on CoreAudio.
+ *
+ * Refusing to apply is the whole of it. The rate is still measured and
+ * still shown, so the overlay and the log keep saying what was seen,
+ * which is what a mismeasuring driver needs in order to be fixed. */
+#define AUDIO_SINK_BIAS_PLAUSIBLE   0.0005
+#define AUDIO_SINK_BASELINE_USEC    30000000
+#define AUDIO_SINK_CHECK_USEC       4000000
+
+static void audio_driver_sink_restart(audio_driver_state_t *audio_st,
+      int64_t now_usec, uint64_t consumed)
+{
+   audio_st->sink_baseline_start = now_usec;
+   audio_st->sink_apply_at       = now_usec + AUDIO_SINK_BASELINE_USEC;
+   audio_st->sink_check_at       = now_usec + AUDIO_SINK_CHECK_USEC;
+   audio_st->sink_offered_at     = audio_st->sink_offered;
+   audio_st->sink_offered_raw_at = audio_st->sink_offered_raw;
+   audio_st->sink_accepted_at    = audio_st->sink_accepted;
+   audio_st->sink_consumed_at    = consumed;
+   audio_st->sink_check_offered  = audio_st->sink_offered;
+   audio_st->sink_check_consumed = consumed;
+   audio_st->sink_sum_usec       = 0;
+   audio_st->sink_sum_offered    = 0.0;
+   audio_st->sink_sum_consumed   = 0.0;
+   audio_st->sink_adjust_sum     = 0.0;
+   audio_st->sink_adjust_n       = 0;
+}
+
+/**
+ * audio_driver_sink_update:
+ *
+ * Runs on the thread that flushes, after each write. Every four seconds
+ * it closes a window and reads two counts over it against the host
+ * clock: frames the device consumed, and frames the frontend offered -
+ * each offered frame divided by the resampling ratio in force when it
+ * was, rate control's adjustment and the bias both, so the sum is what
+ * the source produces at the nominal rate. A window in which either
+ * side ran more than two percent off the nominal rate is excluded, not
+ * averaged in: a pause, a save state loading, a menu, a core stalling
+ * are all shorter than a stall gate would catch and every one of them
+ * put the device ahead of the source and read as a fast clock. The
+ * windows kept are summed, and every thirty seconds of kept time the
+ * bias is set to their ratio - the slow, integral term beside rate
+ * control's fast, proportional one, and one path for both modes, since
+ * rate control's adjustment is divided out of the offered count rather
+ * than absorbed. With rate control on and a non-blocking writer the
+ * fill sits pinned full and rate control's mean says "slow" forever;
+ * that is the buffer, not the clock, and it is no longer consulted.
+ *
+ * Offered, not accepted: frames a small buffer refuses do not enter the
+ * ratio; they are counted apart and warned about once.
+ *
+ * now_usec is a parameter so the harness can drive the clock.
+ */
+static void audio_driver_sink_update(audio_driver_state_t *audio_st,
+      int64_t now_usec)
+{
+   const audio_driver_t *audio = audio_st->current_audio;
+   uint64_t consumed;
+   unsigned rate = config_get_ptr()->uints.audio_output_sample_rate;
+
+   if (!config_get_ptr()->bools.audio_sink_rate_estimation)
+   {
+      /* Off means no bias: a bias set while the option was on would
+       * otherwise stay in every rate-control adjustment, and the
+       * ratio itself without rate control, for the rest of the
+       * session. The baseline is dropped with it so that turning the
+       * option back on measures afresh. */
+      if (audio_st->sink_bias != 1.0)
+      {
+         audio_st->sink_bias = 1.0;
+         if (!(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_CONTROL))
+            audio_st->src_ratio_curr = audio_st->src_ratio_orig;
+      }
+      audio_st->sink_baseline_start = 0;
+      audio_st->sink_applied        = 0;
+      /* The statistics overlay prints the Sink and Source lines while
+       * a rate is known; with the option off there is none. */
+      audio_st->sink_rate_hz        = 0.0;
+      audio_st->sink_source_hz      = 0.0;
+      return;
+   }
+
+   if (!audio || !audio->frames_consumed || !rate)
+      return;
+
+   /* The window gate first, then the driver.
+    *
+    * This runs after every write, so at the core's frame rate, while
+    * the count it fetches is used once per four-second window - two
+    * hundred and forty calls at 60 fps to serve one. frames_consumed()
+    * is not always a cheap read either: it is an atomic load on WASAPI
+    * and CoreAudio, but snd_pcm_delay() on ALSA and an unwrapped play
+    * cursor on dsound. Asking only when the answer will be used is the
+    * same measurement for a fraction of the calls.
+    *
+    * The baseline case still has to ask, since it is the call that
+    * establishes the starting count. */
+   if (audio_st->sink_baseline_start && now_usec < audio_st->sink_check_at)
+      return;
+
+   consumed = audio->frames_consumed(audio_st->context_audio_data);
+
+   if (!audio_st->sink_baseline_start)
+   {
+      audio_driver_sink_restart(audio_st, now_usec, consumed);
+      return;
+   }
+
+   /* Close the window. */
+   {
+      int64_t  wdt   = now_usec - (audio_st->sink_check_at - AUDIO_SINK_CHECK_USEC);
+      double   dofr  = audio_st->sink_offered - audio_st->sink_check_offered;
+      uint64_t dc    = consumed >= audio_st->sink_check_consumed
+            ? consumed - audio_st->sink_check_consumed : 0;
+      double   nominal = (double)rate * (double)wdt / 1e6;
+      audio_st->sink_check_at       = now_usec + AUDIO_SINK_CHECK_USEC;
+      audio_st->sink_check_offered  = audio_st->sink_offered;
+      audio_st->sink_check_consumed = consumed;
+
+      /* Both sides at rate, within two percent, or the window is not a
+       * measurement of the clocks and is left out. */
+      if (     nominal <= 0.0
+            || dofr < nominal * 0.98 || dofr > nominal * 1.02
+            || (double)dc < nominal * 0.98 || (double)dc > nominal * 1.02)
+      {
+         audio_st->sink_discarded++;
+         return;
+      }
+      audio_st->sink_discarded     = 0;
+      audio_st->sink_sum_usec     += wdt;
+      audio_st->sink_sum_offered  += dofr;
+      audio_st->sink_sum_consumed += (double)dc;
+   }
+
+   if (audio_st->sink_sum_usec > 0)
+   {
+      audio_st->sink_rate_hz   = audio_st->sink_sum_consumed * 1e6
+            / (double)audio_st->sink_sum_usec;
+      audio_st->sink_source_hz = audio_st->sink_sum_offered * 1e6
+            / (double)audio_st->sink_sum_usec;
+   }
+
+   /* Refused frames: the driver took less than was offered. Said once. */
+   {
+      uint64_t offered  = audio_st->sink_offered_raw - audio_st->sink_offered_raw_at;
+      uint64_t accepted = audio_st->sink_accepted - audio_st->sink_accepted_at;
+      if (     !audio_st->sink_drop_warned && offered > 0
+            && accepted < offered && (offered - accepted) * 1000 > offered)
+      {
+         audio_st->sink_drop_warned = true;
+         RARCH_WARN("[Audio] The driver refused %.2f%% of the audio offered over %.0f s: it is being dropped, most likely a buffer smaller than what the core delivers per frame with audio sync off.\n",
+               100.0 * (double)(offered - accepted) / (double)offered,
+               (double)(now_usec - audio_st->sink_baseline_start) / 1e6);
+      }
+   }
+
+   if (audio_st->sink_sum_usec < AUDIO_SINK_BASELINE_USEC || now_usec < audio_st->sink_apply_at)
+      return;
+
+   /* A blocking writer is the pace: with audio sync on the frame limiter
+    * stands down and the core runs exactly as fast as the resampler
+    * drains into the device, so the source's rate is not its own - it
+    * is the device's, divided by whatever ratio is in force. A bias set
+    * from that ratio slows the ratio, which speeds the core, which reads
+    * as a faster source, which slows the ratio again: measured in the
+    * field as the source climbing +2300 to +3450 ppm with the bias at
+    * the clamp and the game running a third of a percent fast. There is
+    * no clock drift to correct in that mode; blocking already locks the
+    * core to the device. The rate is still measured and shown; the bias
+    * is applied only when the writer does not block and the source has
+    * a clock of its own - the frame timer or the display. */
+   if (!(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_NONBLOCK))
+   {
+      if (!audio_st->sink_applied)
+      {
+         audio_st->sink_applied++;
+         RARCH_LOG("[Audio] Sink rate: the device takes %.1f Hz against the host clock (%+.0f ppm of %u); the writer blocks, so the source follows the device and resampling is not biased.\n",
+               audio_st->sink_rate_hz,
+               (audio_st->sink_rate_hz / (double)rate - 1.0) * 1e6, rate);
+      }
+      audio_st->sink_apply_at = now_usec + AUDIO_SINK_BASELINE_USEC;
+      return;
+   }
+
+   /* Thirty seconds of kept windows: set the bias from their ratio. */
+   {
+      double r = audio_st->sink_sum_offered > 0.0
+            ? audio_st->sink_sum_consumed / audio_st->sink_sum_offered
+            : audio_st->sink_bias;
+
+      /* Too far off to be a crystal: the two counts are not measuring
+       * the same thing. Leave the bias where it is - 1.0 if nothing has
+       * ever been applied - and keep measuring. */
+      if (fabs(r - 1.0) > AUDIO_SINK_BIAS_PLAUSIBLE)
+      {
+         if (!audio_st->sink_implausible_warned)
+         {
+            double src_hz   = audio_st->sink_sum_offered * 1e6
+                  / (double)audio_st->sink_sum_usec;
+            double dev_ppm  = (audio_st->sink_rate_hz / (double)rate - 1.0) * 1e6;
+            double src_ppm  = (src_hz / (double)rate - 1.0) * 1e6;
+            const char *why;
+            audio_st->sink_implausible_warned = true;
+            /* Say which side moved. A device within a crystal's
+             * tolerance against a source well outside it is the
+             * source's clock - with audio sync off, the frame timer or
+             * the display, and a slow timer reads as a slow source -
+             * which rate control absorbs and a bias should not; the
+             * other way round, or both off, the two counts are not
+             * measuring the same thing. */
+            if (fabs(dev_ppm) <= AUDIO_SINK_BIAS_PLAUSIBLE * 1e6
+                  && fabs(src_ppm) > AUDIO_SINK_BIAS_PLAUSIBLE * 1e6)
+               why = "That is the source's clock, not the device's: with audio sync off the core is paced by the frame timer or the display, and rate control absorbs the difference. A bias is for crystals";
+            else if (fabs(src_ppm) <= AUDIO_SINK_BIAS_PLAUSIBLE * 1e6
+                  && fabs(dev_ppm) > AUDIO_SINK_BIAS_PLAUSIBLE * 1e6)
+               why = "That is too far off for a crystal, so the driver is most likely not counting device time";
+            else
+               why = "That is too far apart to be two crystals, so the driver and the frontend are most likely not counting the same thing";
+            RARCH_WARN("[Audio] Sink rate: the device takes %.1f Hz (%+.0f ppm of %u) and the source produces %.1f Hz (%+.0f ppm), a ratio of %+.0f ppm. %s. Not biasing resampling (driver \"%s\"); the rates are still shown.\n",
+                  audio_st->sink_rate_hz, dev_ppm, rate,
+                  src_hz, src_ppm, (r - 1.0) * 1e6, why,
+                  audio_driver_get_ident());
+         }
+         audio_st->sink_apply_at = now_usec + AUDIO_SINK_BASELINE_USEC;
+         return;
+      }
+
+      if (r > 1.0 + AUDIO_SINK_BIAS_MAX)
+         r = 1.0 + AUDIO_SINK_BIAS_MAX;
+      if (r < 1.0 - AUDIO_SINK_BIAS_MAX)
+         r = 1.0 - AUDIO_SINK_BIAS_MAX;
+      /* A correction every thirty seconds is only useful if the buffer
+       * survives thirty seconds of the mismatch it is correcting.
+       *
+       * Rate control works on the fill every frame; this works on the
+       * clock every thirty seconds, and the interval is not arbitrary -
+       * a device that counts in whole periods is only known to a period,
+       * which is 2500 ppm of noise over four seconds and 330 over thirty,
+       * so applying sooner would apply noise. That makes the cadence a
+       * floor, and a buffer small enough to empty inside it cannot be
+       * held by this mechanism at all: by the time the first correction
+       * exists the audio has already broken up, and the correction then
+       * stops further drift without refilling what has gone.
+       *
+       * Reported once rather than worked around, because the two things
+       * that do fix it are the user's to choose - rate control, which
+       * acts every frame, or more latency. Modelled in
+       * samples/audio/sink_rate against a field report: a 10.7 ms buffer
+       * with a 490 ppm mismatch first underran at eleven seconds, with
+       * the estimator on and off alike. */
+      if (!audio_st->sink_too_slow_warned && audio_st->buffer_size > 0)
+      {
+         size_t frame_bytes = (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_USE_FLOAT)
+               ? 2 * sizeof(float) : 2 * sizeof(int16_t);
+         double buffer_sec  = (double)audio_st->buffer_size
+               / (double)frame_bytes / (double)rate;
+         double mismatch    = fabs(r - 1.0);
+         /* Half the buffer: rate control's setpoint, and the room a
+          * drift has in either direction from a settled fill. */
+         double drain_sec   = mismatch > 0.0
+               ? (buffer_sec * 0.5) / mismatch : 0.0;
+
+         if (drain_sec > 0.0
+               && drain_sec < (double)AUDIO_SINK_BASELINE_USEC / 1e6)
+         {
+            audio_st->sink_too_slow_warned = true;
+            RARCH_WARN("[Audio] Sink rate: the device and the source differ by %+.0f ppm, which empties half of this driver's %.1f ms buffer in %.0f s - sooner than the %.0f s it takes to measure and apply a correction. The correction cannot hold a buffer this small: turn on Audio Rate Control, which works every frame, or raise Audio Latency.\n",
+                  (r - 1.0) * 1e6, buffer_sec * 1000.0, drain_sec,
+                  (double)AUDIO_SINK_BASELINE_USEC / 1e6);
+         }
+      }
+
+      audio_st->sink_bias = r;
+      audio_st->sink_applied++;
+      audio_st->sink_apply_at = now_usec + AUDIO_SINK_BASELINE_USEC;
+
+      /* Without rate control nothing else sets the ratio: the bias is
+       * applied here. With it, compute_rate_adjust() applies it. */
+      if (!(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_CONTROL))
+         audio_st->src_ratio_curr = audio_st->src_ratio_orig * audio_st->sink_bias;
+
+      /* The source's rate too: what the core produced, at the nominal
+       * ratio, per host second. The bias is the ratio of the two, so
+       * when it disagrees with the device's ppm this line says which
+       * side moved. */
+      audio_st->sink_source_hz = audio_st->sink_sum_offered * 1e6
+            / (double)audio_st->sink_sum_usec;
+      RARCH_LOG("[Audio] Sink rate: the device takes %.1f Hz against the host clock (%+.0f ppm of %u) and the source produces %.1f Hz (%+.0f ppm) over %.0f s kept of %.0f; resampling biased by %+.0f ppm.\n",
+            audio_st->sink_rate_hz,
+            (audio_st->sink_rate_hz / (double)rate - 1.0) * 1e6, rate,
+            audio_st->sink_source_hz,
+            (audio_st->sink_source_hz / (double)rate - 1.0) * 1e6,
+            (double)audio_st->sink_sum_usec / 1e6,
+            (double)(now_usec - audio_st->sink_baseline_start) / 1e6,
+            (audio_st->sink_bias - 1.0) * 1e6);
+   }
+}
+
+double audio_driver_get_sink_rate_hz(double *bias, double *source_hz)
+{
+   audio_driver_state_t *audio_st = &audio_driver_st;
+   if (bias)
+      *bias = audio_st->sink_bias > 0.0 ? audio_st->sink_bias : 1.0;
+   if (source_hz)
+      *source_hz = audio_st->sink_source_hz;
+   return audio_st->sink_rate_hz;
 }
 
 /**
@@ -872,6 +1316,8 @@ static size_t audio_driver_ff_discard_bound(audio_driver_state_t *audio_st,
       return in_frames;
 
    avail_bytes     = audio->write_avail(audio_st->context_audio_data);
+   if (audio_st->buffer_size && avail_bytes > audio_st->buffer_size)
+      avail_bytes  = audio_st->buffer_size;
    out_frame_bytes = (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_USE_FLOAT)
          ? (2 * sizeof(float))
          : (2 * sizeof(int16_t));
@@ -983,7 +1429,15 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
                ? 0.0f
                : audio_st->volume_gain;
 
-   if (audio_st->reinit_request)
+   /* A reinit tears the audio driver down and up, which under the
+    * threaded pipeline stops and joins the audio thread; that cannot
+    * be done from the audio thread, which is what calls this then. On
+    * the pipeline the producer consumes the request in
+    * audio_driver_submit(), on the core's thread; here it is acted on
+    * only inline, where flush runs on that thread already. Taken from
+    * here on the consumer's thread it joined itself: a hang on the
+    * first device change, ASIO or WASAPI, with the pipeline on. */
+   if (audio_st->reinit_request && !audio_st->pipe_threaded)
    {
       audio_st->reinit_request = false;
       RARCH_LOG("[Audio] Driver reinit requested...\n");
@@ -1046,8 +1500,39 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
        * gain (0.0 when muted) to its output - a driver that drops it
        * silently disables the volume and mute settings. */
       audio_st->stat_frontend_is_float = false;
-      audio->write_raw(audio_st->context_audio_data,
-            data, frames, input_rate, rate_adjust, audio_volume_gain);
+      {
+         ssize_t  w    = audio->write_raw(audio_st->context_audio_data,
+               data, frames, input_rate, rate_adjust, audio_volume_gain);
+         /* The sink estimate, which this path was not feeding at all:
+          * offered went uncounted and sink_update() was never called,
+          * so on any driver taking the fast path the estimator sat
+          * inert - no Sink row, no measurement, and no sign that it was
+          * doing nothing.
+          *
+          * The driver does the resampling here, so what it will hand
+          * the device is the frames given scaled by the rate ratio and
+          * by rate control's adjustment. sink_offered wants that with
+          * the adjustment divided out, as the other write sites do, so
+          * the bias measures the clocks and not rate control's own
+          * corrections. write_raw returns device frames accepted, so it
+          * goes straight into sink_accepted with no byte conversion.
+          *
+          * The bias reaches the driver only through the rate_adjust
+          * above, which compute_rate_adjust() multiplies it into - so
+          * with rate control off it is measured and shown but not
+          * applied, exactly as it is for a blocking writer. */
+         unsigned out_rate = config_get_ptr()->uints.audio_output_sample_rate;
+         if (out_rate && input_rate)
+         {
+            double nominal = (double)frames * (double)out_rate
+                  / (double)input_rate;
+            audio_st->sink_offered_raw += (uint64_t)(nominal * rate_adjust);
+            audio_st->sink_offered     += nominal;
+            if (w > 0)
+               audio_st->sink_accepted += (uint64_t)w;
+         }
+      }
+      audio_driver_sink_update(audio_st, cpu_features_get_time_usec());
       return;
    }
 
@@ -1248,9 +1733,17 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
                      out_frames, mixer_gain, override);
             }
 #endif
-            audio->write(audio_st->context_audio_data,
-                  audio_st->output_samples_buf,
-                  out_frames * 2 * sizeof(float));
+            AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_WROTE);
+            {
+               ssize_t w = audio->write(audio_st->context_audio_data,
+                     audio_st->output_samples_buf,
+                     out_frames * 2 * sizeof(float));
+               audio_st->sink_offered_raw += out_frames;
+               audio_st->sink_offered     += (double)out_frames * audio_st->src_ratio_orig / audio_st->src_ratio_curr;
+               if (w > 0)
+                  audio_st->sink_accepted += (uint64_t)w / (2 * sizeof(float));
+            }
+            audio_driver_sink_update(audio_st, cpu_features_get_time_usec());
          }
          else
          {
@@ -1321,9 +1814,17 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
                         mixer_gain, override);
             }
 #endif
-            audio->write(audio_st->context_audio_data,
-                  audio_st->output_samples_int16,
-                  out_frames * 2 * sizeof(int16_t));
+            AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_WROTE);
+            {
+               ssize_t w = audio->write(audio_st->context_audio_data,
+                     audio_st->output_samples_int16,
+                     out_frames * 2 * sizeof(int16_t));
+               audio_st->sink_offered_raw += out_frames;
+               audio_st->sink_offered     += (double)out_frames * audio_st->src_ratio_orig / audio_st->src_ratio_curr;
+               if (w > 0)
+                  audio_st->sink_accepted += (uint64_t)w / (2 * sizeof(int16_t));
+            }
+            audio_driver_sink_update(audio_st, cpu_features_get_time_usec());
          }
          return;
       }
@@ -1738,8 +2239,18 @@ static void audio_driver_flush(audio_driver_state_t *audio_st,
          output_frames       *= sizeof(int16_t);  /* Unit: bytes */
       }
 
-      audio->write(audio_st->context_audio_data,
-            output_data, output_frames * 2);
+      AUDIO_FLAGS_SET(audio_st, AUDIO_FLAG_WROTE);
+      {
+         size_t  fb = (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_USE_FLOAT)
+               ? 2 * sizeof(float) : 2 * sizeof(int16_t);
+         ssize_t w  = audio->write(audio_st->context_audio_data,
+               output_data, output_frames * 2);
+         audio_st->sink_offered_raw += (uint64_t)(output_frames * 2 / fb);
+         audio_st->sink_offered     += (double)(output_frames * 2 / fb) * audio_st->src_ratio_orig / audio_st->src_ratio_curr;
+         if (w > 0)
+            audio_st->sink_accepted += (uint64_t)w / fb;
+      }
+      audio_driver_sink_update(audio_st, cpu_features_get_time_usec());
    }
 }
 
@@ -1780,6 +2291,7 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
    unsigned audio_latency         = (runloop_audio_latency > setting_audio_latency)
          ? runloop_audio_latency : setting_audio_latency;
    size_t max_buffer_samples      = AUDIO_CHUNK_SIZE_NONBLOCKING * 2;
+   bool latency_floored           = false;
    /* Accommodate rewind since at some point we might have two full buffers. */
    size_t outsamples_max          = max_buffer_samples * AUDIO_MAX_RATIO * slowmotion_ratio;
    size_t audio_buf_length        = max_buffer_samples * sizeof(float);
@@ -1819,6 +2331,14 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
    convert_s16_to_float_init_simd();
    convert_float_to_s16_init_simd();
    audio_driver_clamp_init_simd();
+
+   if (audio_latency < AUDIO_LATENCY_MIN_MS)
+   {
+      RARCH_WARN("[Audio] Latency setting of %u ms is below the %u ms minimum; using %u ms.\n",
+            audio_latency, AUDIO_LATENCY_MIN_MS, AUDIO_LATENCY_MIN_MS);
+      latency_floored = true;
+      audio_latency   = AUDIO_LATENCY_MIN_MS;
+   }
 
    if (!arena_int16 || !arena_float)
    {
@@ -1917,6 +2437,7 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
          audio_driver_st.pipe_pass_int16s = 128;
       audio_driver_st.pipe_pass_int16s   &= ~(size_t)1;
       audio_driver_st.pipe_gen            = 0;
+      audio_driver_st.pipe_stalled        = false;
       if (!audio_driver_st.pipe_lock)
          audio_driver_st.pipe_lock        = slock_new();
       if (!audio_driver_st.pipe_cond)
@@ -1938,6 +2459,10 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
       RARCH_LOG("[Audio] Threaded pipeline: ring holds %u frames of core audio.\n",
             (unsigned)(audio_driver_st.pipe_ring.capacity / (2 * sizeof(int16_t))));
    }
+
+   /* Before the driver's init, which is where a driver that reports a
+    * device stage sets it. */
+   audio_driver_st.device_latency_frames = 0;
 
    if (audio_cb_inited || (AUDIO_FLAGS_GET(&audio_driver_st) & AUDIO_FLAG_PIPELINE_THREADED))
    {
@@ -2100,6 +2625,75 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
 
    AUDIO_FLAGS_CLEAR(&audio_driver_st, AUDIO_FLAG_CONTROL);
 
+   /* The sink estimate starts over with the driver. */
+   audio_driver_st.sink_bias           = 1.0;
+   audio_driver_st.sink_baseline_start = 0;
+   audio_driver_st.sink_offered        = 0.0;
+   audio_driver_st.sink_offered_raw    = 0;
+   audio_driver_st.sink_accepted       = 0;
+   audio_driver_st.sink_applied        = 0;
+   audio_driver_st.sink_rate_hz        = 0.0;
+   audio_driver_st.sink_adjust_sum     = 0.0;
+   audio_driver_st.sink_adjust_n       = 0;
+   audio_driver_st.sink_discarded      = 0;
+   audio_driver_st.sink_drop_warned    = false;
+   audio_driver_st.sink_implausible_warned = false;
+   audio_driver_st.sink_too_slow_warned = false;
+
+   /* The driver's buffer, whether or not rate control will use it: it
+    * is what the latency setting became, shown in the statistics
+    * overlay and read back here against the setting. It was read only
+    * on the rate control path, so with rate control off the overlay
+    * had nothing to show and the log nothing to say. */
+   audio_driver_st.buffer_size = 0;
+   if (     (AUDIO_FLAGS_GET(&audio_driver_st) & AUDIO_FLAG_ACTIVE)
+         && audio_driver_st.current_audio->buffer_size)
+   {
+      audio_driver_st.buffer_size =
+         audio_driver_st.current_audio->buffer_size(
+               audio_driver_st.context_audio_data);
+      if (audio_driver_st.buffer_size > 0)
+      {
+         /* The reported buffer against the setting, in the units the
+          * user thinks in. Half of it is the rate control's setpoint,
+          * so half of it in time is the latency this driver gives at
+          * steady state; a driver that reports only some of its
+          * stages, or in the wrong unit, shows here as a size that
+          * does not match the setting. */
+         unsigned out_rate     = new_rate
+               ? new_rate : settings->uints.audio_output_sample_rate;
+         size_t   frame_bytes  =
+               (AUDIO_FLAGS_GET(&audio_driver_st) & AUDIO_FLAG_USE_FLOAT)
+               ? 2 * sizeof(float) : 2 * sizeof(int16_t);
+         double   buffer_ms    = out_rate
+               ? (double)audio_driver_st.buffer_size / frame_bytes
+                  * 1000.0 / out_rate
+               : 0.0;
+         const char *ident     = audio_driver_st.current_audio->ident;
+#ifdef HAVE_THREADS
+         /* Name the driver the user chose, not the wrapper it runs
+          * under. */
+         if (string_is_equal(ident, "audio-thread"))
+         {
+            const audio_driver_t *inner = audio_thread_wrapped_driver(
+                  audio_driver_st.context_audio_data);
+            if (inner)
+               ident           = inner->ident;
+         }
+#endif
+         RARCH_LOG("[Audio] Driver \"%s\" reports a %u-byte buffer: "
+               "%.1f ms of %s at %u Hz against a %u ms latency setting%s; "
+               "rate control %s it near %.1f ms.\n",
+               ident,
+               (unsigned)audio_driver_st.buffer_size, buffer_ms,
+               (frame_bytes == 2 * sizeof(float)) ? "float" : "int16",
+               out_rate, audio_latency,
+               latency_floored ? " (raised to the minimum)" : "",
+               audio_rate_control ? "holds" : "is off; on, it would hold",
+               buffer_ms / 2.0);
+      }
+   }
+
    if (
             (   !audio_cb_inited
              || audio_driver_st.pipe_threaded)
@@ -2123,19 +2717,13 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
        * SIGFPE" workaround for the same hazard. Check it once, centrally,
        * and fall back to no rate control rather than making every driver
        * defend itself. */
-      if (audio_driver_st.current_audio->buffer_size)
-      {
-         audio_driver_st.buffer_size =
-            audio_driver_st.current_audio->buffer_size(
-                  audio_driver_st.context_audio_data);
-         if (audio_driver_st.buffer_size > 0)
-            AUDIO_FLAGS_SET(&audio_driver_st, AUDIO_FLAG_CONTROL);
-         else
-            RARCH_WARN("[Audio] Rate control was desired, but the driver "
-                  "reported a zero buffer size.\n");
-      }
-      else
+      if (!audio_driver_st.current_audio->buffer_size)
          RARCH_WARN("[Audio] Rate control was desired, but driver does not support needed features.\n");
+      else if (audio_driver_st.buffer_size == 0)
+         RARCH_WARN("[Audio] Rate control was desired, but the driver "
+               "reported a zero buffer size.\n");
+      else
+         AUDIO_FLAGS_SET(&audio_driver_st, AUDIO_FLAG_CONTROL);
    }
 
    command_event(CMD_EVENT_DSP_FILTER_INIT, NULL);
@@ -2151,6 +2739,8 @@ bool audio_driver_init_internal(void *settings_data, bool audio_cb_inited)
    audio_driver_st.cached_rate_adjust = 1.0;
    audio_driver_st.samples_since_drc  = 0;
 #ifdef HAVE_THREADS
+   /* Before anything that could start a thread reaching the mixer or
+    * the DSP filter: those readers assume it is already there. */
    if (!audio_driver_st.state_lock)
       audio_driver_st.state_lock      = slock_new();
 #endif
@@ -2229,6 +2819,18 @@ static void audio_driver_pipeline_signal(audio_driver_state_t *audio_st)
 #endif
 }
 
+/**
+ * audio_driver_state_lock:
+ *
+ * Guards the mixer streams and the DSP filter against the audio
+ * thread. The NULL test is not optional locking: the lock is created
+ * before that thread exists and freed after audio->free() has joined
+ * it, so every moment at which a second thread can reach this state
+ * is a moment at which the lock is there. A caller that reaches the
+ * mixer from another thread outside an initialised audio driver would
+ * find no lock and no diagnostic, so anything that widens who touches
+ * that state has to widen this lifetime with it.
+ **/
 void audio_driver_state_lock(void)
 {
 #ifdef HAVE_THREADS
@@ -2297,6 +2899,21 @@ static void audio_driver_submit(audio_driver_state_t *audio_st,
    {
       const uint8_t *p = (const uint8_t*)data;
       size_t len       = samples * sizeof(int16_t);
+
+      /* The producer runs on the core's thread, which is the one that
+       * can stop and join the audio thread; a driver's request to
+       * reinitialise is taken here, and this batch dropped, as the
+       * inline path drops it in flush. See the note there. */
+      if (audio_st->reinit_request)
+      {
+         audio_st->reinit_request = false;
+         RARCH_LOG("[Audio] Driver reinit requested...\n");
+         command_event(CMD_EVENT_AUDIO_REINIT, NULL);
+#ifdef HAVE_MICROPHONE
+         command_event(CMD_EVENT_MICROPHONE_REINIT, NULL);
+#endif
+         return;
+      }
       while (len)
       {
          unsigned gen;
@@ -2323,9 +2940,16 @@ static void audio_driver_submit(audio_driver_state_t *audio_st,
           * generation is read under the lock before re-checking the
           * ring, so a pass that finished between the failed write and
           * the wait cannot be missed; the timed wait bounds the stall
-          * if the device stops draining. */
+          * if the device stops draining, and a stall found once is
+          * not waited on again until a pass completes - otherwise a
+          * device that never drains costs every frame the full wait. */
          slock_lock(audio_st->pipe_lock);
          gen = audio_st->pipe_gen;
+         if (audio_st->pipe_stalled)
+         {
+            slock_unlock(audio_st->pipe_lock);
+            break;
+         }
          if (retro_spsc_write_avail(&audio_st->pipe_ring) == 0)
          {
             while (audio_st->pipe_gen == gen)
@@ -2334,7 +2958,9 @@ static void audio_driver_submit(audio_driver_state_t *audio_st,
                   break;
             if (audio_st->pipe_gen == gen)
             {
+               audio_st->pipe_stalled = true;
                slock_unlock(audio_st->pipe_lock);
+               RARCH_WARN("[Audio] Device stopped draining; dropping audio until it resumes.\n");
                break;
             }
          }
@@ -2423,30 +3049,50 @@ static void audio_driver_pipeline_consume(audio_driver_state_t *audio_st)
       if (cap >= 64 && have > cap)
          have = cap;
    }
-   retro_spsc_read(&audio_st->pipe_ring, audio_st->pipe_scratch,
-         have * sizeof(int16_t));
-
-   /* Let a throttled producer know ring space has opened. */
-   slock_lock(audio_st->pipe_lock);
-   audio_st->pipe_gen++;
-   scond_signal(audio_st->pipe_cond);
-   slock_unlock(audio_st->pipe_lock);
 
    snap = retro_atomic_load_acquire_int(&audio_st->runloop_snapshot);
    if (    (snap & AUDIO_SNAP_PAUSED)
         || !(AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_ACTIVE)
         || !audio_st->output_samples_buf)
+   {
+      /* Nothing is going to the device while paused; the chunk is
+       * taken and dropped so the ring keeps flowing for the producer. */
+      retro_spsc_read(&audio_st->pipe_ring, audio_st->pipe_scratch,
+            have * sizeof(int16_t));
+      slock_lock(audio_st->pipe_lock);
+      audio_st->pipe_gen++;
+      scond_signal(audio_st->pipe_cond);
+      slock_unlock(audio_st->pipe_lock);
       return;
+   }
 
    /* Second wait: room for this chunk, so the write inside flush()
     * returns at once and the fill rate control reads before it is the
     * device's real fill, as it is for the inline path. The chunk is
     * one publish's worth resampled, so a little more than have*ratio;
-    * wait for that with a small margin. */
+    * wait for that with a small margin.
+    *
+    * Waited for before the chunk leaves the ring. A device that makes
+    * no room gets nothing taken on its behalf: the ring stays full, the
+    * producer's one bounded wait finds it so, and it drops at full
+    * frame rate until a pass completes. Taking the chunk first and then
+    * finding no room threw it away while telling the producer the ring
+    * had drained, and paced the frontend at one frame per failed pass. */
    out_bytes   = (size_t)((double)(have >> 1) * audio_st->src_ratio_curr + 16.0)
          * frame_bytes;
    if (!audio->wait_writable(audio_st->context_audio_data, out_bytes))
       return;
+
+   retro_spsc_read(&audio_st->pipe_ring, audio_st->pipe_scratch,
+         have * sizeof(int16_t));
+
+   /* Let a throttled producer know ring space has opened - and that
+    * the device is draining again, if it had been found stalled. */
+   slock_lock(audio_st->pipe_lock);
+   audio_st->pipe_gen++;
+   audio_st->pipe_stalled = false;
+   scond_signal(audio_st->pipe_cond);
+   slock_unlock(audio_st->pipe_lock);
 
    audio_driver_state_lock();
    audio_driver_flush(audio_st,
@@ -3010,6 +3656,10 @@ static void audio_mixer_play_stop_sequential_cb(
    }
 }
 
+/* Defined below, next to their locking public entry points. */
+static void audio_driver_mixer_stop_stream_locked(unsigned i);
+static void audio_driver_mixer_remove_stream_locked(unsigned i);
+
 static bool audio_driver_mixer_get_free_stream_slot(
       unsigned *id, enum audio_mixer_stream_type type)
 {
@@ -3062,11 +3712,22 @@ bool audio_driver_mixer_add_stream(audio_mixer_stream_params_t *params)
       case AUDIO_MIXER_SLOT_SELECTION_MANUAL:
          free_slot = params->slot_selection_idx;
 
+         /* The unlocked internals below index the array directly, so
+          * the range the public entry points check is checked here. */
+         if (free_slot >= AUDIO_MIXER_MAX_SYSTEM_STREAMS)
+         {
+            if (params->buf_owner)
+               params->buf_owner_free(params->buf_owner);
+            audio_driver_state_unlock();
+            return false;
+         }
+
          /* If we are using a manually specified
           * slot, must free any existing stream
-          * before assigning the new one */
-         audio_driver_mixer_stop_stream(free_slot);
-         audio_driver_mixer_remove_stream(free_slot);
+          * before assigning the new one. The lock is already
+          * held here, so the unlocked internals are what run. */
+         audio_driver_mixer_stop_stream_locked(free_slot);
+         audio_driver_mixer_remove_stream_locked(free_slot);
          break;
       case AUDIO_MIXER_SLOT_SELECTION_AUTOMATIC:
       default:
@@ -3528,12 +4189,12 @@ void audio_driver_mixer_set_stream_volume(unsigned i, float vol)
    audio_driver_state_unlock();
 }
 
-void audio_driver_mixer_stop_stream(unsigned i)
+/* Callers already holding the state lock use this; the public
+ * entry point below takes the lock and calls it. The lock is a
+ * plain mutex, so a locked caller that reached the public entry
+ * point instead would deadlock against itself. */
+static void audio_driver_mixer_stop_stream_locked(unsigned i)
 {
-   audio_driver_state_lock();
-   if (i >= AUDIO_MIXER_MAX_SYSTEM_STREAMS)
-      return;
-
    switch (audio_driver_st.mixer_streams[i].state)
    {
       case AUDIO_STREAM_STATE_PLAYING:
@@ -3554,21 +4215,25 @@ void audio_driver_mixer_stop_stream(unsigned i)
       case AUDIO_STREAM_STATE_NONE:
          break;
    }
+}
+
+void audio_driver_mixer_stop_stream(unsigned i)
+{
+   if (i >= AUDIO_MIXER_MAX_SYSTEM_STREAMS)
+      return;
+   audio_driver_state_lock();
+   audio_driver_mixer_stop_stream_locked(i);
    audio_driver_state_unlock();
 }
 
-void audio_driver_mixer_remove_stream(unsigned i)
+static void audio_driver_mixer_remove_stream_locked(unsigned i)
 {
-   audio_driver_state_lock();
-   if (i >= AUDIO_MIXER_MAX_SYSTEM_STREAMS)
-      return;
-
    switch (audio_driver_st.mixer_streams[i].state)
    {
       case AUDIO_STREAM_STATE_PLAYING:
       case AUDIO_STREAM_STATE_PLAYING_LOOPED:
       case AUDIO_STREAM_STATE_PLAYING_SEQUENTIAL:
-         audio_driver_mixer_stop_stream(i);
+         audio_driver_mixer_stop_stream_locked(i);
          /* fall-through */
       case AUDIO_STREAM_STATE_STOPPED:
          {
@@ -3576,7 +4241,10 @@ void audio_driver_mixer_remove_stream(unsigned i)
             if (handle)
                audio_mixer_destroy(handle);
 
-            if (*audio_driver_st.mixer_streams[i].name)
+            /* A stream loaded without a basename - every menu sound -
+             * carries a NULL name, so the pointer is tested before the
+             * bytes behind it. */
+            if (audio_driver_st.mixer_streams[i].name)
                free(audio_driver_st.mixer_streams[i].name);
 
             audio_driver_st.mixer_streams[i].state   = AUDIO_STREAM_STATE_NONE;
@@ -3590,6 +4258,14 @@ void audio_driver_mixer_remove_stream(unsigned i)
       case AUDIO_STREAM_STATE_NONE:
          break;
    }
+}
+
+void audio_driver_mixer_remove_stream(unsigned i)
+{
+   if (i >= AUDIO_MIXER_MAX_SYSTEM_STREAMS)
+      return;
+   audio_driver_state_lock();
+   audio_driver_mixer_remove_stream_locked(i);
    audio_driver_state_unlock();
 }
 
@@ -3701,12 +4377,58 @@ error:
    return false;
 }
 
+/* The driver's buffer as opened, in milliseconds of the output format
+ * at the output rate: what buffer_size() reported at init, which is
+ * what the latency setting asked for as far as the driver could honour
+ * it. Zero when no driver is up or it reports no buffer. Half of it is
+ * where rate control holds the fill, so half of it in time is the
+ * latency heard from the driver at steady state. */
+void audio_driver_set_device_latency(size_t frames)
+{
+   audio_driver_st.device_latency_frames = frames;
+}
+
+double audio_driver_get_device_latency_ms(void)
+{
+   audio_driver_state_t *audio_st = &audio_driver_st;
+   settings_t *settings           = config_get_ptr();
+   unsigned    rate               = settings->uints.audio_output_sample_rate;
+
+   if (!audio_st->current_audio || !audio_st->device_latency_frames || !rate)
+      return 0.0;
+   return (double)audio_st->device_latency_frames * 1000.0 / rate;
+}
+
+double audio_driver_get_buffer_latency_ms(void)
+{
+   audio_driver_state_t *audio_st = &audio_driver_st;
+   settings_t *settings           = config_get_ptr();
+   unsigned    rate               = settings->uints.audio_output_sample_rate;
+   size_t      frame_bytes        =
+         (AUDIO_FLAGS_GET(audio_st) & AUDIO_FLAG_USE_FLOAT)
+         ? 2 * sizeof(float) : 2 * sizeof(int16_t);
+
+   if (!audio_st->current_audio || !audio_st->buffer_size || !rate)
+      return 0.0;
+   return (double)audio_st->buffer_size / frame_bytes * 1000.0 / rate;
+}
+
 const char *audio_driver_get_ident(void)
 {
    audio_driver_state_t *audio_st = &audio_driver_st;
    const audio_driver_t *audio    = audio_st->current_audio;
    if (!audio)
       return NULL;
+#ifdef HAVE_THREADS
+   /* Threaded pipeline: current_audio is the wrapper. Report the driver
+    * it wraps, which is what every caller of this actually wants. */
+   if (string_is_equal(audio->ident, "audio-thread"))
+   {
+      const char *wrapped = audio_thread_wrapped_ident(audio_st->context_audio_data);
+      if (wrapped)
+         return wrapped;
+   }
+#endif
    return audio->ident;
 }
 
@@ -3974,6 +4696,12 @@ microphone_driver_state_t *microphone_state_get_ptr(void)
 #define mic_driver_get_sample_size(microphone) \
    (((microphone)->flags & MICROPHONE_FLAG_USE_FLOAT) ? sizeof(float) : sizeof(int16_t))
 
+#ifdef HAVE_THREADS
+/* Defined below, next to microphone_driver_read(), which is the other
+ * half of the same split. */
+static void microphone_driver_capture_thread(void *data);
+#endif
+
 static bool mic_driver_open_mic_internal(retro_microphone_t* microphone);
 bool microphone_driver_start(void)
 {
@@ -4047,6 +4775,18 @@ const char *config_get_microphone_driver_options(void)
 bool microphone_driver_find_driver(void *settings_data, const char *prefix,
       bool verbosity_enabled)
 {
+#ifdef HAVE_ALSA
+   /* "alsathread" was a second ALSA capture driver, removed once the
+    * frontend's threaded capture covered what it did; a config that
+    * still names it means ALSA, not the first entry in the table.
+    * Aliased for a release, then to go. */
+   {
+      settings_t *_settings = (settings_t*)settings_data;
+      if (string_is_equal(_settings->arrays.microphone_driver, "alsathread"))
+         strlcpy(_settings->arrays.microphone_driver, "alsa",
+               sizeof(_settings->arrays.microphone_driver));
+   }
+#endif
    settings_t *settings = (settings_t*)settings_data;
    int i                 = (int)driver_find_index(
          "microphone_driver",
@@ -4114,6 +4854,38 @@ static void mic_driver_microphone_handle_free(retro_microphone_t *microphone, bo
 
    if (!driver_context)
       RARCH_WARN("[Microphone] Attempted to free a microphone without an active driver context.\n");
+
+#ifdef HAVE_THREADS
+   /* First of all, before anything it touches goes away. The worker
+    * holds the microphone context across a bounded wait_readable() and
+    * a read(), and it writes into the fifo - so closing the device or
+    * freeing the fifo underneath it is a use-after-free, which is what
+    * ThreadSanitizer reported here: close_mic() used to run first and
+    * raced the worker's read on the same handle. */
+   if (microphone->capture_thread)
+   {
+      retro_atomic_store_release_int(&microphone->capture_running, 0);
+      if (microphone->fifo_cond)
+      {
+         slock_lock(microphone->fifo_lock);
+         scond_signal(microphone->fifo_cond);
+         slock_unlock(microphone->fifo_lock);
+      }
+      sthread_join(microphone->capture_thread);
+      microphone->capture_thread = NULL;
+      microphone->worker_sample_size = 0;
+   }
+   if (microphone->fifo_cond)
+   {
+      scond_free(microphone->fifo_cond);
+      microphone->fifo_cond = NULL;
+   }
+   if (microphone->fifo_lock)
+   {
+      slock_free(microphone->fifo_lock);
+      microphone->fifo_lock = NULL;
+   }
+#endif
 
    if (microphone->microphone_context)
    {
@@ -4321,6 +5093,7 @@ static bool mic_driver_open_mic_internal(retro_microphone_t* microphone)
 
    microphone_driver_set_mic_state(microphone, microphone->flags & MICROPHONE_FLAG_ENABLED);
 
+
    RARCH_LOG("[Microphone] Requested microphone sample rate of %uHz, got %uHz.\n",
              microphone->requested_params.rate,
              microphone->actual_params.rate
@@ -4394,6 +5167,52 @@ static bool mic_driver_open_mic_internal(retro_microphone_t* microphone)
 
    microphone->flags &= ~MICROPHONE_FLAG_PENDING;
    RARCH_LOG("[Microphone] Initialized microphone.\n");
+#ifdef HAVE_THREADS
+   /* Last, after every field the worker reads has been written: the
+    * flags, orig_ratio and both resamplers above. Starting it earlier
+    * raced all three - ThreadSanitizer caught the worker reading them
+    * while this function was still filling them in. */
+   /* Threaded capture, on the same setting as the playback pipeline and
+    * the same condition: the driver must be able to wait on its device,
+    * or the worker would poll. A driver without wait_readable() keeps
+    * the frame-synchronous path, exactly as a playback driver without
+    * wait_writable() does. */
+   if (     settings->bools.audio_threaded_pipeline
+         && mic_driver->wait_readable)
+   {
+      /* Before the thread exists, so it never reads ::flags itself. */
+      microphone->worker_sample_size = mic_driver_get_sample_size(microphone);
+      microphone->fifo_lock       = slock_new();
+      microphone->fifo_cond       = scond_new();
+      retro_atomic_int_init(&microphone->capture_running, 1);
+
+      if (     microphone->fifo_lock
+            && microphone->fifo_cond
+            && (microphone->capture_thread = sthread_create(
+                  microphone_driver_capture_thread, mic_st)))
+         RARCH_LOG("[Microphone] Threaded capture: the worker owns the read"
+               " and the resampler.\n");
+      else
+      {
+         /* Any part missing and the whole thing is off; the
+          * frame-synchronous path below needs none of it. */
+         retro_atomic_store_release_int(&microphone->capture_running, 0);
+         if (microphone->fifo_cond)
+            scond_free(microphone->fifo_cond);
+         if (microphone->fifo_lock)
+            slock_free(microphone->fifo_lock);
+         microphone->fifo_cond = NULL;
+         microphone->fifo_lock = NULL;
+         microphone->worker_sample_size = 0;
+         RARCH_WARN("[Microphone] Could not start the capture worker;"
+               " reading on the frame instead.\n");
+      }
+   }
+   else if (settings->bools.audio_threaded_pipeline)
+      RARCH_LOG("[Microphone] Threaded capture requested, but driver \"%s\""
+            " has no wait_readable(); reading on the frame.\n",
+            mic_driver->ident);
+#endif
    return true;
 error:
    mic_driver_microphone_handle_free(microphone, false);
@@ -4511,7 +5330,15 @@ static size_t microphone_driver_flush(
       size_t num_frames)
 {
    struct resampler_data resampler_data;
-   unsigned sample_size = mic_driver_get_sample_size(microphone);
+   /* The worker's snapshot when it is running, so the capture path does
+    * not read ::flags on a thread that does not own it; the
+    * frame-synchronous path derives it as before. The sample size and
+    * the USE_FLOAT bit say the same thing - the device's format, fixed
+    * at open - so every test below asks this rather than the flags word
+    * the main thread keeps writing. */
+   unsigned sample_size = microphone->worker_sample_size
+         ? microphone->worker_sample_size
+         : mic_driver_get_sample_size(microphone);
    size_t bytes_to_read = MIN(mic_st->input_frames_length, num_frames * sample_size);
    size_t frames_to_enqueue;
    int bytes_read       = mic_st->driver->read(
@@ -4552,7 +5379,7 @@ static size_t microphone_driver_flush(
       frames_to_enqueue = MIN(FIFO_WRITE_AVAIL(microphone->outgoing_samples) / sizeof(int16_t), resampler_data.input_frames);
 
       /* If this mic provides floating-point samples... */
-      if (microphone->flags & MICROPHONE_FLAG_USE_FLOAT)
+      if (sample_size == sizeof(float))
       {
          convert_float_to_s16(mic_st->final_frames, (const float*)mic_st->input_frames, resampler_data.input_frames);
          fifo_write(microphone->outgoing_samples, mic_st->final_frames, frames_to_enqueue * sizeof(int16_t));
@@ -4570,7 +5397,7 @@ static size_t microphone_driver_flush(
     * duplicate mono into interleaved stereo, resample, take the left
     * channel -- but without the s16->float->s16 round-trip, which is pure
     * requantisation on a signal that starts and ends as int16. */
-   if (     !(microphone->flags & MICROPHONE_FLAG_USE_FLOAT)
+   if (     !(sample_size == sizeof(float))
          &&   microphone->resampler_data_int16
          &&   microphone->resampler_int16_process)
    {
@@ -4614,7 +5441,7 @@ static size_t microphone_driver_flush(
 
    /* First we need to format the input for the resampler. */
    /* If this mic provides floating-point samples... */
-   if (microphone->flags & MICROPHONE_FLAG_USE_FLOAT)
+   if (sample_size == sizeof(float))
       /* Samples are already in floating-point, so we just need to up-channel them. */
       convert_to_dual_mono_float(mic_st->dual_mono_frames,
             (const float*)mic_st->input_frames, resampler_data.input_frames);
@@ -4648,6 +5475,72 @@ static size_t microphone_driver_flush(
    fifo_write(microphone->outgoing_samples, mic_st->final_frames, frames_to_enqueue * sizeof(int16_t));
    return frames_to_enqueue;
 }
+
+#ifdef HAVE_THREADS
+/* The capture worker: block on the device, flush a slice, repeat.
+ *
+ * Everything expensive in the old read path happens here instead - the
+ * blocking read, the dual-mono up-channel and the resampler - so the
+ * core's retro_microphone_read() is left with a fifo read. That is the
+ * same split the threaded playback pipeline makes, in the same place,
+ * for the same reason: none of it belongs inside a frame.
+ *
+ * wait_readable() is bounded by contract, so a device that stops
+ * delivering returns 0 and this loops back to check capture_running
+ * rather than parking. */
+static void microphone_driver_capture_thread(void *data)
+{
+   microphone_driver_state_t *mic_st = (microphone_driver_state_t*)data;
+   retro_microphone_t *microphone    = &mic_st->microphone;
+
+   while (retro_atomic_load_acquire_int(&microphone->capture_running))
+   {
+      size_t slice = AUDIO_CHUNK_SIZE_NONBLOCKING;
+      unsigned sample_size;
+      size_t room;
+
+      if (     !mic_st->driver
+            || !mic_st->driver->wait_readable
+            || !microphone->outgoing_samples)
+         break;
+
+      /* Do not read more than the fifo can take, or the flush would
+       * discard what it could not enqueue and the device would run
+       * ahead of the core. */
+      slock_lock(microphone->fifo_lock);
+      room = FIFO_WRITE_AVAIL(microphone->outgoing_samples);
+      slock_unlock(microphone->fifo_lock);
+
+      sample_size = microphone->worker_sample_size;
+      if (room < slice * sizeof(int16_t))
+      {
+         /* The core is not consuming; wait for it rather than spin. */
+         slock_lock(microphone->fifo_lock);
+         scond_wait_timeout(microphone->fifo_cond, microphone->fifo_lock,
+               20000);
+         slock_unlock(microphone->fifo_lock);
+         continue;
+      }
+
+      if (!mic_st->driver->wait_readable(mic_st->driver_context,
+               microphone->microphone_context, slice * sample_size))
+         continue;
+
+      slock_lock(microphone->fifo_lock);
+      microphone_driver_flush(mic_st, microphone, slice);
+      scond_signal(microphone->fifo_cond);
+      slock_unlock(microphone->fifo_lock);
+   }
+}
+
+/* True when this microphone is being served by the worker. */
+static bool microphone_driver_capture_threaded(
+      const microphone_driver_state_t *mic_st,
+      const retro_microphone_t *microphone)
+{
+   return microphone->capture_thread != NULL;
+}
+#endif
 
 int microphone_driver_read(retro_microphone_t *microphone, int16_t* frames, size_t num_frames)
 {
@@ -4714,6 +5607,35 @@ int microphone_driver_read(retro_microphone_t *microphone, int16_t* frames, size
       return -1;
 
    retro_assert(mic_st->input_frames != NULL);
+
+#ifdef HAVE_THREADS
+   if (microphone_driver_capture_threaded(mic_st, microphone))
+   {
+      /* The worker is doing the reading, the up-channelling and the
+       * resampling; all that is left here is to take what it has, and
+       * to wait a bounded moment if it has not caught up. Silence is
+       * the same answer the synchronous path gives for a device that
+       * will not deliver, arrived at without blocking the frame on it. */
+      size_t want = num_frames * sizeof(int16_t);
+      size_t got;
+
+      slock_lock(microphone->fifo_lock);
+      if (FIFO_READ_AVAIL(microphone->outgoing_samples) < want)
+         scond_wait_timeout(microphone->fifo_cond, microphone->fifo_lock,
+               10000);
+      got = FIFO_READ_AVAIL(microphone->outgoing_samples);
+      if (got > want)
+         got = want;
+      if (got)
+         fifo_read(microphone->outgoing_samples, frames, got);
+      scond_signal(microphone->fifo_cond);
+      slock_unlock(microphone->fifo_lock);
+
+      if (got < want)
+         memset((uint8_t*)frames + got, 0, want - got);
+      return (int)num_frames;
+   }
+#endif
 
    {
       unsigned stall_count = 0;
@@ -4836,17 +5758,58 @@ error:
 static bool microphone_driver_free_devices_list(void)
 {
    microphone_driver_state_t *mic_st = &mic_driver_st;
-   const microphone_driver_t *mic    = mic_st->driver;
-   if (
-            !mic
-         || !mic->device_list_free
-         || !mic_st->driver_context
-         || !mic_st->devices_list)
+   const microphone_driver_t *mic    = mic_st->devices_list_driver;
+   if (!mic_st->devices_list)
       return false;
-
-   mic->device_list_free(mic_st->driver_context, mic_st->devices_list);
-   mic_st->devices_list = NULL;
+   /* Released by the driver that built it, with no context: none of
+    * the microphone drivers' frees read one, and the context it was
+    * built with may be gone. */
+   if (mic && mic->device_list_free)
+      mic->device_list_free(NULL, mic_st->devices_list);
+   else
+      string_list_free(mic_st->devices_list);
+   mic_st->devices_list        = NULL;
+   mic_st->devices_list_driver = NULL;
    return true;
+}
+
+/* The driver whose device_list_new to call, as for audio: the running
+ * driver when it is the one configured, the configured driver with no
+ * context otherwise. The list was built once at init, only when the
+ * driver had opened, and always from the running driver: a driver
+ * picked in the menu showed the old driver's devices until a restart,
+ * and one that failed to open showed nothing to pick instead. */
+static const microphone_driver_t *microphone_driver_enumeration_driver(
+      microphone_driver_state_t *mic_st, const void **ctx)
+{
+   settings_t *settings           = config_get_ptr();
+   const microphone_driver_t *mic = mic_st->driver;
+   *ctx                           = mic_st->driver_context;
+   if (     mic && mic_st->driver_context
+         && string_is_equal(mic->ident, settings->arrays.microphone_driver))
+      return mic;
+   {
+      int i = (int)driver_find_index("microphone_driver",
+            settings->arrays.microphone_driver);
+      *ctx  = NULL;
+      if (i >= 0)
+         return microphone_drivers[i];
+   }
+   return NULL;
+}
+
+void microphone_driver_refresh_devices_list(void)
+{
+   microphone_driver_state_t *mic_st = &mic_driver_st;
+   const void *ctx                   = NULL;
+   const microphone_driver_t *mic;
+   microphone_driver_free_devices_list();
+   mic = microphone_driver_enumeration_driver(mic_st, &ctx);
+   if (mic && mic->device_list_new)
+   {
+      mic_st->devices_list        = mic->device_list_new(ctx);
+      mic_st->devices_list_driver = mic;
+   }
 }
 
 bool microphone_driver_deinit(bool is_reset)

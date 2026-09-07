@@ -80,6 +80,10 @@ enum runloop_state_enum
 {
    RUNLOOP_STATE_ITERATE = 0,
    RUNLOOP_STATE_POLLED_AND_SLEEP,
+   /* A one-shot menu action was performed and the next iteration should
+    * start clean. Not idle: returns to the caller immediately, without
+    * the idle sleep POLLED_AND_SLEEP takes. */
+   RUNLOOP_STATE_POLLED_AND_CONTINUE,
    RUNLOOP_STATE_PAUSE,
    RUNLOOP_STATE_MENU,
    RUNLOOP_STATE_QUIT
@@ -181,6 +185,15 @@ struct runloop
    retro_time_t core_run_time;
    retro_time_t frame_limit_minimum_time;
    retro_time_t frame_limit_last_time;
+   /* When the previous iteration reached the pacing block, and the
+    * smoothed interval between iterations. The pace bits say who
+    * claims to be holding the loop; this says how fast it is actually
+    * going, which is the other half of the same question - a source
+    * that claims the loop while the loop runs at three times the
+    * content rate is not holding anything. */
+   retro_time_t pace_iter_last;
+   retro_time_t pace_period_usec;
+   unsigned     pace;                           /* enum runloop_pace_source bits */
    retro_usec_t frame_time_last;                /* int64_t alignment */
 
    /* Per-frame scalar state. Kept adjacent to the timing block above so the
@@ -340,7 +353,87 @@ struct runloop
     * cross-thread race, so reusing it would undo that reasoning for
     * no gain. This is main-thread only. */
    bool content_closing;
+   /* An external clock is calling runloop_iterate(); see
+    * RUNLOOP_PACE_EXTERNAL. Main-thread only, same reasoning. */
+   bool pace_external;
 };
+
+/* Frame pacing sources.
+ *
+ * The loop is held to a rate by whichever of these block on a given
+ * frame. They are not exclusive and they are not prioritised: VSync
+ * blocks in the video driver's present, audio backpressure blocks in
+ * audio_driver_write(), Scanline Sync waits in
+ * video_driver_scanline_after_frame(), and the frame-limit timer sleeps
+ * at the end of runloop_iterate(). Any combination can be live on the
+ * same frame, which is why VSync together with audio_sync stutters -
+ * two hardware clocks holding the same loop - and why the comment at
+ * the RUNLOOP_STATE_MENU throttle special-cases audio backpressure
+ * against the timer.
+ *
+ * runloop_state_t::pace records the composition for the current
+ * frame, computed once in runloop_pace_compute() from the same
+ * conditions each mechanism already tests. It does not yet choose
+ * between them: this is the composition made explicit, so that a
+ * priority can be decided in one place later rather than by adding a
+ * fourth special case in a third file. A bitmask rather than an enum
+ * for exactly that reason - a single value would assert a choice the
+ * loop does not currently make. */
+enum runloop_pace_source
+{
+   RUNLOOP_PACE_NONE     = 0,
+   RUNLOOP_PACE_VSYNC    = (1 << 0), /* display: present blocks          */
+   RUNLOOP_PACE_AUDIO    = (1 << 1), /* audio crystal: write blocks      */
+   RUNLOOP_PACE_SCANLINE = (1 << 2), /* display: vblank-locked wait      */
+   RUNLOOP_PACE_TIMER    = (1 << 3), /* CPU counter: frame-limit sleep   */
+   RUNLOOP_PACE_NOWINDOW = (1 << 4), /* nothing to present to: wait      */
+   /* The host is calling runloop_iterate() at the content rate from
+    * somewhere it must return quickly to - a Win32 modal size/move
+    * loop, for one. The frame-limit sleep, frame delay, and the
+    * no-window wait yield to that clock rather than stack on it. Set
+    * from runloop_state_t::pace_external. */
+   RUNLOOP_PACE_EXTERNAL = (1 << 5)
+};
+
+/* The three pacing decisions the runloop makes every iteration, here
+ * rather than in runloop.c so samples/runloop/pacing can run the
+ * shipping versions instead of a copy that drifts from them. Each is
+ * pure: no state, no clock, nothing to mock. */
+
+/* One frame of the content's own time, in microseconds. Bounded either
+ * way: a core is free to report a nonsense rate, and neither a busy
+ * loop nor a ten-second stall is a reasonable reading of one frame.
+ * A rate of zero means "unknown", which is taken as 60 Hz. */
+static INLINE retro_time_t runloop_content_frame_time_us(float core_hz)
+{
+   retro_time_t period = (core_hz > 0.0f)
+         ? (retro_time_t)(1000000.0f / core_hz) : 16667;
+   if (period < 1000)
+      return 1000;
+   if (period > 100000)
+      return 100000;
+   return period;
+}
+
+/* Whether the frame limiter should hold the loop at 1.0x because
+ * nothing else is: an empty pace record means no vsync, no audio, no
+ * scanline lock, and no fast-forward limit to fall back on. Never
+ * under fast-forward, where running unthrottled is the point. */
+static INLINE bool runloop_pace_gap_engages(unsigned pace,
+      bool nonblocking, bool fastmotion)
+{
+   return (pace == RUNLOOP_PACE_NONE) && !nonblocking && !fastmotion;
+}
+
+/* Whether an interval between iterations is worth averaging into the
+ * measured loop rate. Anything past a quarter second is a stall - a
+ * state load, a shader rebuild - not pacing, and one of them drags an
+ * eight-sample average far enough to misreport for several frames.
+ * Nothing that genuinely holds the loop runs slower than 4 Hz. */
+static INLINE bool runloop_pace_sample_usable(retro_time_t delta_us)
+{
+   return delta_us > 0 && delta_us < 250000;
+}
 
 typedef struct runloop runloop_state_t;
 

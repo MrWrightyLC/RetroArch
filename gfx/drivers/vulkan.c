@@ -1792,12 +1792,16 @@ static void vulkan_copy_staging_to_dynamic(vk_t *vk, VkCommandBuffer cmd,
 
    if (compute_upload)
    {
-      const uint32_t ubo[3] = { dynamic->width, dynamic->height, (uint32_t)(staging->stride / 4) /* in terms of u32 words */ };
+      uint32_t ubo[3];
       VkWriteDescriptorSet write;
       VkDescriptorBufferInfo buffer_info;
       VkDescriptorImageInfo image_info;
       struct vk_buffer_range range;
       VkDescriptorSet set;
+
+      ubo[0] = dynamic->width;
+      ubo[1] = dynamic->height;
+      ubo[2] = (uint32_t)(staging->stride / 4); /* in terms of u32 words */
 
       VULKAN_IMAGE_LAYOUT_TRANSITION(
             cmd,
@@ -3862,7 +3866,14 @@ static void vulkan_init_pipelines(vk_t *vk)
    vulkan_init_pipeline_layout(vk);
 
    /* Input assembly */
-   input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   /* Strip pipelines below are created with primitive restart on.
+    * Restart only acts on indexed draws that contain the 0xFFFF index,
+    * which the shared quad IBO never holds (vulkan_init_quad_ibo caps
+    * it), so it changes nothing about what is drawn; and Metal has no
+    * way to turn restart off for strips, so MoltenVK warns on every
+    * pipeline that asks - once per pass, on every shader load. */
+   input_assembly.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+   input_assembly.primitiveRestartEnable = VK_FALSE;
 
    /* VAO state */
    attributes[0].location  = 0;
@@ -4009,7 +4020,8 @@ static void vulkan_init_pipelines(vk_t *vk)
 
    /* Build display pipelines (STRIP topology only).
     *   [0]: blend off, [1]: blend on. */
-   input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+   input_assembly.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+   input_assembly.primitiveRestartEnable = VK_TRUE;
    for (i = 0; i < 2; i++)
    {
       blend_attachment.blendEnable = i;
@@ -4085,7 +4097,8 @@ static void vulkan_init_pipelines(vk_t *vk)
    /* Other menu pipelines.  Six STRIP-only variants populate
     * slots [2..7]: ribbon, ribbon_simple, snow_simple, snow,
     * bokeh, snowflake.  See display.pipelines for layout. */
-   input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+   input_assembly.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+   input_assembly.primitiveRestartEnable = VK_TRUE;
    for (i = 0; i < 6; i++)
    {
       switch (i)
@@ -4186,7 +4199,8 @@ static void vulkan_init_pipelines(vk_t *vk)
       /* Reset topology to TRIANGLE_LIST for the font and
        * alpha_blend pipelines.  The preceding menu shader loop
        * leaves it at TRIANGLE_STRIP. */
-      input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      input_assembly.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      input_assembly.primitiveRestartEnable = VK_FALSE;
 
       /* SDR font pipeline */
       module_info.codeSize   = sizeof(alpha_blend_vert);
@@ -4227,7 +4241,8 @@ static void vulkan_init_pipelines(vk_t *vk)
        * Reuse the alpha_blend vertex shader (stages[0]) and
        * alpha_blend fragment shader (stages[1]) still alive
        * from just above. */
-      input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      input_assembly.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      input_assembly.primitiveRestartEnable = VK_TRUE;
       for (i = 0; i < 2; i++)
       {
          blend_attachment.blendEnable = i;
@@ -4241,7 +4256,8 @@ static void vulkan_init_pipelines(vk_t *vk)
 
       /* SDR menu shader pipelines, slots [2..7].  STRIP-only;
        * mirror of the main display.pipelines build. */
-      input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      input_assembly.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      input_assembly.primitiveRestartEnable = VK_TRUE;
       for (i = 0; i < 6; i++)
       {
          switch (i)
@@ -4972,10 +4988,17 @@ static void vulkan_init_quad_ibo(vk_t *vk, unsigned max_quads)
    VkResult res;
    void *mapped                            = NULL;
    VkDevice device                         = vk->context->device;
-   VkDeviceSize ibo_size                   = max_quads * 6 * sizeof(uint16_t);
+   VkDeviceSize ibo_size;
    VkBufferCreateInfo buffer_info;
    VkMemoryRequirements mem_reqs;
    VkMemoryAllocateInfo alloc;
+
+   /* 16-bit indices, and 0xFFFF is the primitive-restart index the
+    * strip pipelines are created with: the largest index written is
+    * max_quads * 4 - 1, which must stay below it. */
+   if (max_quads > 0xFFFF / 4)
+      max_quads = 0xFFFF / 4;
+   ibo_size                                = max_quads * 6 * sizeof(uint16_t);
 
    buffer_info.sType                       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
    buffer_info.pNext                       = NULL;
@@ -5786,12 +5809,15 @@ static void *vulkan_init(const video_info_t *video,
       goto error;
    }
 
+   RARCH_DBG("[Vulkan] Filter chain ready.\n");
+
    if (vk->ctx_driver->input_driver)
    {
       const char *joypad_name = settings->arrays.input_joypad_driver;
       vk->ctx_driver->input_driver(
             vk->ctx_data, joypad_name,
             input, input_data);
+      RARCH_DBG("[Vulkan] Context input driver ready.\n");
    }
 
    /* The MoltenVK driver needs this, particularly after driver reinit
@@ -6319,10 +6345,7 @@ static void vulkan_set_projection(vk_t *vk,
       {  1.0f,     0.0f,    0.0f,    0.0f ,
          0.0f,     1.0f,    0.0f,    0.0f ,
          0.0f,     0.0f,    1.0f,    0.0f ,
-         vk->translate_x/(float)vk->vp.width,
-         vk->translate_y/(float)vk->vp.height,
-         0.0f,
-         1.0f }
+         0.0f,     0.0f,    0.0f,    1.0f }
    };
    math_matrix_4x4 tmp     = {
       {  1.0f,     0.0f,    0.0f,    0.0f ,
@@ -6330,6 +6353,9 @@ static void vulkan_set_projection(vk_t *vk,
          0.0f,     0.0f,    1.0f,    0.0f ,
          0.0f,     0.0f,    0.0f,    1.0f }
    };
+
+   MAT_ELEM_4X4(trn, 0, 3) = vk->translate_x / (float)vk->vp.width;
+   MAT_ELEM_4X4(trn, 1, 3) = vk->translate_y / (float)vk->vp.height;
 
    /* Calculate projection. */
    matrix_4x4_ortho(vk->mvp_no_rot, ortho->left, ortho->right,

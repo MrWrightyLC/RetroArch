@@ -111,6 +111,17 @@ typedef struct audio_driver
 {
    /* Creates and initializes handle to audio driver.
     *
+    * latency is the user's audio latency setting, in milliseconds. It
+    * is the amount of audio the driver should be able to hold between
+    * write() returning and the device consuming it - the buffering the
+    * driver itself controls, sized to that much of the output format
+    * at the rate the device ends up at. A driver that can learn the
+    * device's own latency beyond that may subtract it, so the total the
+    * user hears approaches the setting; one that cannot reports what it
+    * has and leaves the rest to buffer_size() below. The frontend has
+    * already applied the policy minimum before calling; a driver only
+    * raises latency further for a hardware minimum of its own.
+    *
     * Returns: audio driver handle on success, otherwise NULL.
     **/
    void *(*init)(const char *device, unsigned rate,
@@ -211,15 +222,50 @@ typedef struct audio_driver
    /* Human-readable identifier. */
    const char *ident;
 
-   /* Optional. Get audio device list (allocates, caller has to free this) */
+   /* Optional. Get audio device list (allocates, caller has to free this).
+    *
+    * data is the driver context and MAY BE NULL. Enumeration must not
+    * require an initialised driver: the frontend builds this list
+    * whether or not init succeeded, so the user can pick a device when
+    * the current one failed, and refreshes it from the menu. A driver
+    * that caches a list at init may return the cache when given its
+    * context and must still enumerate when given NULL. */
    void *(*device_list_new)(void *data);
 
-   /* Optional. Frees audio device list */
+   /* Optional. Frees audio device list. data MAY BE NULL. */
    void (*device_list_free)(void *data, void *data2);
 
-   /* Optional. */
+   /**
+    * Optional. How much the driver will take right now without
+    * blocking, in bytes of the driver's output format - int16 or
+    * float stereo frames as use_float() decides. Counts every stage
+    * the driver controls that has room: its own fifo or ring, and the
+    * device-side buffer where the device reports its fill, so that a
+    * device with room and a fifo with room add up. Never more than
+    * buffer_size() reports. The rate control samples this once per
+    * frame and steers it toward half of buffer_size(); fast-forward
+    * bounds the resampler's input by it; the threaded pipeline sizes
+    * its passes from it. A driver that cannot measure its fill should
+    * leave this NULL rather than report a constant, which reads as a
+    * device that never drains.
+    */
    size_t (*write_avail)(void *data);
 
+   /**
+    * Optional. The most the driver can hold between write() returning
+    * and the device consuming it, in the same bytes write_avail()
+    * counts: every stage the driver controls, summed - fifo plus
+    * engine buffer plus queued blocks. Read once at init, so it is a
+    * property of the opened device; a driver whose server renegotiates
+    * it afterwards pushes the new size through
+    * audio_driver_set_buffer_size(), as pulse does. Half of it is the
+    * rate control's setpoint, so half of it, in time, is the latency
+    * the user hears from this driver at steady state; a stage the
+    * driver cannot see (the hardware's own DMA, a mixing daemon's sink)
+    * adds to that and is not reported here. Zero disables rate
+    * control for the session, which the frontend logs; a driver that
+    * has a buffer reports it rather than zero.
+    */
    size_t (*buffer_size)(void *data);
 
    /**
@@ -241,17 +287,34 @@ typedef struct audio_driver
          unsigned input_rate, double rate_adjust, float volume);
 
    /**
-    * Optional. Blocks until the device can accept at least len bytes
+    * Optional. Sleeps until the device can accept at least len bytes
     * without blocking, then returns how many it will take, as
-    * write_avail() would. Returns 0 only when the device is gone or the
-    * stream has failed; a paused or corked stream keeps waiting. The
-    * threaded pipeline calls it with the size of the chunk it is about
-    * to write, so the write itself never blocks and the device fill it
-    * measures for rate control beforehand is the real one. Drivers
-    * without it cannot host the threaded pipeline and keep the inline
-    * path.
+    * write_avail() would. The sleep must be bounded: 0 means no space
+    * is coming from this call - the device is gone, the stream has
+    * failed, or nothing drained within the driver's bounded wait - and
+    * the caller skips the pass and retries on a later wake, so a
+    * stalled device costs dropped audio rather than a parked audio
+    * thread. The threaded pipeline calls it with the size of the chunk
+    * it is about to write, so the write itself never blocks and the
+    * device fill it measures for rate control beforehand is the real
+    * one. Drivers without it cannot host the threaded pipeline and
+    * keep the inline path.
     */
    size_t (*wait_writable)(void *data, size_t len);
+
+   /**
+    * Optional. Frames the device has consumed since start(), in output
+    * frames, monotonic and free-running on the device's own clock: a
+    * driver with a callback counts what each callback took, one with a
+    * queue counts what it released less what the device still holds.
+    * Compared over time with the frames the frontend wrote, it gives
+    * the device's real sample rate against the host's clock, and the
+    * frontend trims its resampling ratio by that - slowly, by parts per
+    * million - so a buffer no longer drifts to an underrun or overrun
+    * on the difference between two crystals. NULL leaves the frontend
+    * without the estimate, as before.
+    */
+   size_t (*frames_consumed)(void *data);
 } audio_driver_t;
 
 typedef struct
@@ -262,6 +325,10 @@ typedef struct
    uint64_t free_samples_count;
 
    struct string_list *devices_list;
+   /* The driver whose device_list_new built devices_list, so that its
+    * device_list_free is the one that releases it - not whichever
+    * driver is configured or running when the list is next rebuilt. */
+   const audio_driver_t *devices_list_driver;
 
    /**
     * A scratch buffer for audio output to be processed,
@@ -386,6 +453,12 @@ typedef struct
     * the consumer when it acts on it. Sticky, unlike the signal, so a
     * wake raised before the consumer reaches its wait is not lost. */
    bool     pipe_wake;
+   /* Set by the producer under pipe_lock when a full ring did not drain
+    * within its bounded wait, cleared by the consumer when a pass
+    * completes. While set, the producer drops rather than waits, so a
+    * device that has stopped draining costs the frame nothing beyond
+    * the one wait that found it out. */
+   bool     pipe_stalled;
    /**
     * What the audio thread needs to know about the runloop and the
     * menu, published by the main thread with
@@ -409,6 +482,14 @@ typedef struct
    size_t rewind_size;
 #endif
    size_t buffer_size;
+   /* The device stage behind the driver's buffer, in frames at the
+    * output rate, as the driver reports it: what ASIOGetLatencies gives
+    * for output, say. 0 when the driver reports none. Set by the driver
+    * through audio_driver_set_device_latency(); shown in the statistics
+    * overlay next to the buffer, since it is the part of the path the
+    * setting cannot reach and the part that differs most between
+    * devices. */
+   size_t device_latency_frames;
    size_t data_ptr;
 
    unsigned free_samples_buf[AUDIO_BUFFER_FREE_SAMPLES_COUNT];
@@ -471,6 +552,40 @@ typedef struct
     * keeps the "one frame's worth" target accurate at any output sample
     * rate (48 kHz, 96 kHz, 192 kHz, ...) and any content fps. */
    double   cached_rate_adjust;        /* last computed factor; default 1.0 */
+
+   /* Sink rate estimation: see audio_driver_sink_update(). Counted
+    * where the driver's write() is called, on the thread that flushes;
+    * the estimate runs there too. */
+   double   sink_offered;              /* output frames offered to the driver, each
+                                          divided by the bias in force when it was, so
+                                          the sum is what would have been offered
+                                          unbiased: the source's rate on the host clock */
+   uint64_t sink_accepted;             /* output frames the driver took */
+   uint64_t sink_offered_raw;          /* output frames offered, as offered */
+   double   sink_offered_at;           /* the three at the baseline's start */
+   uint64_t sink_accepted_at;
+   uint64_t sink_offered_raw_at;
+   uint64_t sink_consumed_at;          /* frames_consumed() at the baseline's start */
+   int64_t  sink_baseline_start;       /* usec; 0 = not started */
+   int64_t  sink_check_at;             /* usec; the next plausibility check */
+   int64_t  sink_apply_at;             /* usec; the next setting of the bias */
+   double   sink_check_offered;        /* offered and consumed at the last check */
+   uint64_t sink_check_consumed;
+   int64_t  sink_sum_usec;             /* the windows kept: time, offered, consumed */
+   double   sink_sum_offered;
+   double   sink_sum_consumed;
+   double   sink_bias;                 /* multiplied into the ratio; 1.0 = none */
+   double   sink_rate_hz;              /* the device's rate as measured; 0 = unknown */
+   double   sink_source_hz;            /* the source's rate at the nominal ratio, as measured */
+   double   sink_adjust_sum;           /* DRC adjusts over the baseline, for the mean */
+   unsigned sink_adjust_n;
+   unsigned sink_applied;              /* times the bias has been set from a baseline */
+   unsigned sink_discarded;            /* windows discarded in a row */
+   bool     sink_drop_warned;
+   /* Said once when a measured ratio is too far off to be a crystal. */
+   bool     sink_implausible_warned;
+   /* Said once when the buffer empties faster than corrections arrive. */
+   bool     sink_too_slow_warned;
    size_t   samples_since_drc;         /* int16 samples submitted since last update */
    size_t   drc_threshold_int16s;      /* one frame's worth of stereo int16 at the current rate */
    /* Set by audio_driver_frame_end() so the next flush recomputes the
@@ -508,6 +623,12 @@ void audio_driver_dsp_filter_free(void);
 bool audio_driver_dsp_filter_init(const char *device);
 
 void audio_driver_set_buffer_size(size_t bufsize);
+
+/* Records the device stage behind the driver's buffer, in frames at the
+ * output rate; 0 to say the driver reports none. Reset when a driver is
+ * initialised, so a driver that reports one calls this after each init
+ * or reinit, and again if the device changes it. */
+void audio_driver_set_device_latency(size_t frames);
 
 bool audio_driver_get_devices_list(void **ptr);
 
@@ -674,6 +795,10 @@ bool audio_driver_init_internal(void *data, bool audio_cb_inited);
 
 bool audio_driver_deinit(void);
 
+/* Rebuild audio_driver_st.devices_list from the driver that is, or
+ * would be, in use. Does not require the driver to be initialised. */
+void audio_driver_refresh_devices_list(void);
+
 bool audio_driver_find_driver(const char *audio_drv,
       const char *prefix, bool verbosity_enabled);
 
@@ -744,7 +869,6 @@ extern audio_driver_t audio_rsound;
 extern audio_driver_t audio_audioio;
 extern audio_driver_t audio_oss;
 extern audio_driver_t audio_alsa;
-extern audio_driver_t audio_alsathread;
 extern audio_driver_t audio_tinyalsa;
 extern audio_driver_t audio_roar;
 extern audio_driver_t audio_openal;
@@ -759,10 +883,14 @@ extern audio_driver_t audio_dsound;
 extern audio_driver_t audio_wasapi;
 #ifdef HAVE_ASIO
 extern audio_driver_t audio_asio;
-void audio_asio_open_control_panel(void);
+/* Opens the running ASIO driver's control panel. False when ASIO is not
+ * the driver running - it was picked in the menu and audio has not
+ * been reinitialised since - so the caller can say so. */
+bool audio_asio_open_control_panel(void);
+bool audio_asio_output_channel_name(unsigned ch, char *buf, size_t len);
+unsigned audio_asio_output_channel_count(void);
 #endif
 extern audio_driver_t audio_coreaudio;
-extern audio_driver_t audio_coreaudio3;
 extern audio_driver_t audio_xenon360;
 extern audio_driver_t audio_ps3;
 extern audio_driver_t audio_gx;
@@ -772,12 +900,9 @@ extern audio_driver_t audio_ps2;
 extern audio_driver_t audio_ctr_csnd;
 extern audio_driver_t audio_ctr_dsp;
 #ifdef HAVE_THREADS
-extern audio_driver_t audio_ctr_dsp_thread;
 #endif
 extern audio_driver_t audio_switch;
-extern audio_driver_t audio_switch_thread;
 extern audio_driver_t audio_switch_libnx_audren;
-extern audio_driver_t audio_switch_libnx_audren_thread;
 extern audio_driver_t audio_rwebaudio;
 extern audio_driver_t audio_audioworklet;
 
@@ -796,6 +921,17 @@ audio_driver_state_t *audio_state_get_ptr(void);
 void audio_driver_update_drc_threshold(audio_driver_state_t *audio_st);
 
 const char *audio_driver_get_ident(void);
+
+double audio_driver_get_buffer_latency_ms(void);
+
+/* The device stage behind the buffer in ms, as set by
+ * audio_driver_set_device_latency(); 0 when the driver reports none. */
+double audio_driver_get_device_latency_ms(void);
+
+/* The device's sample rate as measured against the host clock, in Hz,
+ * and the ratio bias applied for it; 0 when no driver reports
+ * frames_consumed() or no window has completed yet. */
+double audio_driver_get_sink_rate_hz(double *bias, double *source_hz);
 
 extern audio_driver_t *audio_drivers[];
 
